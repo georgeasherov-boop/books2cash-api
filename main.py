@@ -1,173 +1,201 @@
 from flask import Flask, jsonify
 import requests
-from statistics import median
 
 app = Flask(__name__)
 
 BOOK_CATEGORY_UUID = "64f6cfe0-3f10-4abd-8ba2-8c020da0e7d1"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 Books2Cash/1.0",
-    "Accept": "application/json,text/html,*/*",
+    "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
+    "Accept": "application/json,text/plain,*/*",
 }
 
 
 def clean_isbn(isbn):
-    return "".join(ch for ch in str(isbn) if ch.isdigit() or ch.upper() == "X").upper()
-
-
-def safe_get_json(url, timeout=20):
-    r = requests.get(url, headers=HEADERS, timeout=timeout)
-    r.raise_for_status()
-    return r.json()
-
-
-def normalize_partner(name):
-    n = name.lower()
-    if "momox" in n:
-        return "momox"
-    if "rebuy" in n:
-        return "rebuy"
-    if "zoxs" in n:
-        return "zoxs"
-    if "buchmaxe" in n:
-        return "buchmaxe"
-    if "1000books" in n:
-        return "1000books"
-    if "medimops" in n:
-        return "medimops"
-    return name
+    return "".join(
+        ch for ch in str(isbn)
+        if ch.isdigit() or ch.upper() == "X"
+    ).upper()
 
 
 def get_google_books_info(isbn):
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
-        data = safe_get_json(url, timeout=10)
+        r = requests.get(url, timeout=10)
+        data = r.json()
 
-        if "items" not in data or not data["items"]:
-            return {"title": None, "author": None}
+        items = data.get("items", [])
+        if not items:
+            return {"title": "Nicht gefunden", "author": "-"}
 
-        info = data["items"][0].get("volumeInfo", {})
-        title = info.get("title")
+        info = items[0].get("volumeInfo", {})
+        title = info.get("title", "Nicht gefunden")
         authors = info.get("authors", [])
-        author = ", ".join(authors) if authors else None
+        author = ", ".join(authors) if authors else "-"
 
         return {"title": title, "author": author}
-    except Exception:
-        return {"title": None, "author": None}
+
+    except Exception as e:
+        return {"title": "Nicht gefunden", "author": "-", "error": str(e)}
 
 
-def get_bonavendi_data(isbn):
-    search_url = (
+def try_bonavendi(isbn):
+    url = (
         "https://api.bonavendi.at/rest/v2/products/sell"
         f"?q={isbn}&productCategoryFilterUuids={BOOK_CATEGORY_UUID}"
     )
 
-    search = safe_get_json(search_url)
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=15)
 
-    if not search.get("payload"):
+        if r.status_code == 403:
+            return {
+                "ok": False,
+                "blocked": True,
+                "error": "Bonavendi blockiert Railway mit HTTP 403.",
+                "ankauf": {},
+                "bonavendi": {},
+                "raw": []
+            }
+
+        if r.status_code < 200 or r.status_code >= 300:
+            return {
+                "ok": False,
+                "blocked": False,
+                "error": f"Bonavendi HTTP {r.status_code}: {r.text[:300]}",
+                "ankauf": {},
+                "bonavendi": {},
+                "raw": []
+            }
+
+        search = r.json()
+        payload = search.get("payload", [])
+
+        if not payload:
+            return {
+                "ok": True,
+                "blocked": False,
+                "error": None,
+                "ankauf": {},
+                "bonavendi": {},
+                "raw": []
+            }
+
+        external_id = payload[0].get("externalId", isbn)
+
+        product_url = f"https://api.bonavendi.at/rest/v2/products/{external_id}"
+        product_r = requests.get(product_url, headers=HEADERS, timeout=15)
+
+        if product_r.status_code != 200:
+            return {
+                "ok": False,
+                "blocked": False,
+                "error": f"Bonavendi Produkt HTTP {product_r.status_code}",
+                "ankauf": {},
+                "bonavendi": {},
+                "raw": []
+            }
+
+        product = product_r.json()
+        product_payload = product.get("payload", {})
+        product_uuid = product_payload.get("uuid")
+
+        if not product_uuid:
+            return {
+                "ok": False,
+                "blocked": False,
+                "error": "Bonavendi Produkt-UUID fehlt.",
+                "ankauf": {},
+                "bonavendi": {},
+                "raw": []
+            }
+
+        offers_url = (
+            f"https://api.bonavendi.at/rest/v2/products/{product_uuid}/buyOffers"
+            "?maxAgeOfOfferInMinutes=0"
+        )
+
+        offers_r = requests.get(offers_url, headers=HEADERS, timeout=30)
+
+        if offers_r.status_code != 200:
+            return {
+                "ok": False,
+                "blocked": False,
+                "error": f"Bonavendi Offers HTTP {offers_r.status_code}",
+                "ankauf": {},
+                "bonavendi": {},
+                "raw": []
+            }
+
+        offers = offers_r.json().get("payload", [])
+
+        ankauf = {}
+        raw = []
+
+        for offer in offers:
+            if not offer.get("querySuccess"):
+                continue
+
+            price = offer.get("price")
+            if not price or price <= 0:
+                continue
+
+            partner = offer.get("partner", {})
+            name = partner.get("name", "unknown")
+            key = name.lower()
+
+            if "momox" in key:
+                key = "momox"
+            elif "rebuy" in key:
+                key = "rebuy"
+            elif "zoxs" in key:
+                key = "zoxs"
+            elif "buchmaxe" in key:
+                key = "buchmaxe"
+            elif "1000books" in key:
+                key = "1000books"
+            elif "medimops" in key:
+                key = "medimops"
+            else:
+                key = name
+
+            price = round(float(price), 2)
+
+            raw.append({
+                "partner": name,
+                "key": key,
+                "price": price
+            })
+
+            if key not in ankauf or price > ankauf[key]:
+                ankauf[key] = price
+
         return {
-            "title": None,
-            "author": None,
+            "ok": True,
+            "blocked": False,
+            "error": None,
+            "ankauf": ankauf,
+            "bonavendi": ankauf,
+            "raw": raw
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "blocked": False,
+            "error": str(e),
             "ankauf": {},
             "bonavendi": {},
-            "raw": [],
+            "raw": []
         }
-
-    external_id = search["payload"][0].get("externalId", isbn)
-
-    product_url = f"https://api.bonavendi.at/rest/v2/products/{external_id}"
-    product = safe_get_json(product_url)
-
-    payload = product.get("payload", {})
-    product_uuid = payload.get("uuid")
-    title = payload.get("name")
-    description = payload.get("description") or ""
-
-    author = None
-    if "Buch von " in description:
-        try:
-            author = description.split("Buch von ", 1)[1].split("\n", 1)[0].strip()
-        except Exception:
-            author = None
-
-    if not product_uuid:
-        return {
-            "title": title,
-            "author": author,
-            "ankauf": {},
-            "bonavendi": {},
-            "raw": [],
-        }
-
-    offers_url = (
-        f"https://api.bonavendi.at/rest/v2/products/{product_uuid}/buyOffers"
-        "?maxAgeOfOfferInMinutes=0"
-    )
-
-    offers = safe_get_json(offers_url)
-    offer_list = offers.get("payload", [])
-
-    ankauf = {}
-    bonavendi = {}
-    raw = []
-
-    for offer in offer_list:
-        if not offer.get("querySuccess"):
-            continue
-
-        price = offer.get("price")
-        if not price or price <= 0:
-            continue
-
-        partner = offer.get("partner", {})
-        partner_name = partner.get("name", "Unbekannt")
-        key = normalize_partner(partner_name)
-
-        price = round(float(price), 2)
-
-        raw.append({
-            "partner": partner_name,
-            "key": key,
-            "price": price
-        })
-
-        if key not in ankauf or price > ankauf[key]:
-            ankauf[key] = price
-
-        if key not in bonavendi or price > bonavendi[key]:
-            bonavendi[key] = price
-
-    return {
-        "title": title,
-        "author": author,
-        "ankauf": ankauf,
-        "bonavendi": bonavendi,
-        "raw": raw,
-    }
-
-
-def calc_stats(values):
-    values = [float(v) for v in values if v is not None and float(v) > 0]
-    if not values:
-        return {
-            "best": None,
-            "average": None,
-            "median": None
-        }
-
-    return {
-        "best": round(max(values), 2),
-        "average": round(sum(values) / len(values), 2),
-        "median": round(median(values), 2)
-    }
 
 
 @app.route("/")
 def home():
     return jsonify({
         "status": "Books2Cash API läuft",
-        "mode": "real_bonavendi"
+        "mode": "safe_no_crash",
+        "note": "Wenn Bonavendi Railway blockiert, liefert die API trotzdem JSON statt HTTP 500."
     })
 
 
@@ -176,35 +204,26 @@ def lookup(isbn):
     isbn = clean_isbn(isbn)
 
     google = get_google_books_info(isbn)
-    bonavendi = get_bonavendi_data(isbn)
-
-    title = bonavendi.get("title") or google.get("title") or "Nicht gefunden"
-    author = bonavendi.get("author") or google.get("author") or "-"
-
-    ankauf = bonavendi.get("ankauf", {})
-    bonavendi_compare = bonavendi.get("bonavendi", {})
-
-    ankauf_stats = calc_stats(ankauf.values())
-
-    # Verkaufspreise sind vorerst bewusst leer, damit keine falschen Demo-Werte angezeigt werden.
-    verkauf = {
-        "medimops": None,
-        "zvab": None,
-        "booklooker": None,
-        "amazon": None,
-        "ebay": None
-    }
+    bonavendi = try_bonavendi(isbn)
 
     return jsonify({
+        "ok": True,
         "isbn": isbn,
-        "title": title,
-        "author": author,
-        "ankauf": ankauf,
-        "bonavendi": bonavendi_compare,
+        "title": google.get("title", "Nicht gefunden"),
+        "author": google.get("author", "-"),
+        "ankauf": bonavendi.get("ankauf", {}),
+        "bonavendi": bonavendi.get("bonavendi", {}),
         "bonavendi_raw": bonavendi.get("raw", []),
-        "ankauf_stats": ankauf_stats,
-        "verkauf": verkauf,
-        "hinweis": "Ankaufspreise kommen live über Bonavendi. Verkaufspreise sind aktuell deaktiviert, damit keine Demo-Werte angezeigt werden."
+        "verkauf": {
+            "medimops": None,
+            "zvab": None,
+            "booklooker": None,
+            "amazon": None,
+            "ebay": None
+        },
+        "blocked": bonavendi.get("blocked", False),
+        "error": bonavendi.get("error"),
+        "hinweis": "Bonavendi blockiert Railway aktuell mit HTTP 403." if bonavendi.get("blocked") else ""
     })
 
 
