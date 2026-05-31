@@ -4,7 +4,6 @@ import re
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from statistics import median
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from urllib.parse import quote
 
 app = Flask(__name__)
@@ -19,7 +18,7 @@ HEADERS = {
     "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
 }
 
-TIMEOUT = 5
+TIMEOUT = 6
 
 
 def clean_isbn(value):
@@ -105,6 +104,16 @@ def html_to_text(html):
         return ""
 
 
+def page_contains_isbn(text, isbn):
+    if not text:
+        return False
+
+    compact_text = re.sub(r"[^0-9Xx]", "", text).upper()
+    compact_isbn = clean_isbn(isbn)
+
+    return compact_isbn in compact_text
+
+
 def extract_prices(text):
     if not text:
         return []
@@ -150,15 +159,6 @@ def safe_min(values):
     return min(values)
 
 
-def safe_max(values):
-    values = filter_prices(values)
-
-    if not values:
-        return None
-
-    return max(values)
-
-
 def safe_median(values):
     values = filter_prices(values)
 
@@ -168,18 +168,38 @@ def safe_median(values):
     return median(values)
 
 
-def get_prices_from_url(url, min_price=0.50, max_price=1000):
+def get_strict_prices_from_url(url, isbn, min_price=0.50, max_price=1000):
     result = fetch(url)
 
     if not result["ok"]:
-        return [], result["status"]
+        return [], {
+            "status": result["status"],
+            "reason": "http_error",
+        }
 
-    text = html_to_text(result["text"])
-    merged = result["text"] + " " + text
+    html = result["text"]
+    text = html_to_text(html)
+    merged = html + " " + text
+
+    if not page_contains_isbn(merged, isbn):
+        return [], {
+            "status": result["status"],
+            "reason": "isbn_not_found_on_page",
+        }
+
     prices = extract_prices(merged)
     prices = filter_prices(prices, min_price, max_price)
 
-    return prices, result["status"]
+    if not prices:
+        return [], {
+            "status": result["status"],
+            "reason": "no_price_found",
+        }
+
+    return prices, {
+        "status": result["status"],
+        "reason": "ok",
+    }
 
 
 # -------------------------------------------------
@@ -340,10 +360,10 @@ def get_book_info(isbn):
 
 
 # -------------------------------------------------
-# Ankaufspreise schnell, nicht blockierend
+# Ankaufspreise
 # -------------------------------------------------
 
-def buy_momox(isbn, title):
+def buy_momox(isbn):
     urls = [
         f"https://www.momox.de/offer/{isbn}",
         f"https://www.momox.de/verkaufen/?search={quote(isbn)}",
@@ -353,14 +373,19 @@ def buy_momox(isbn, title):
     trace = []
 
     for url in urls:
-        prices, status = get_prices_from_url(url, min_price=0.01, max_price=300)
-        trace.append(status)
-        all_prices.extend(prices[:5])
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.01,
+            max_price=300,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def buy_rebuy(isbn, title):
+def buy_rebuy(isbn):
     urls = [
         f"https://www.rebuy.de/verkaufen/suchen?query={quote(isbn)}",
     ]
@@ -369,14 +394,19 @@ def buy_rebuy(isbn, title):
     trace = []
 
     for url in urls:
-        prices, status = get_prices_from_url(url, min_price=0.01, max_price=300)
-        trace.append(status)
-        all_prices.extend(prices[:5])
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.01,
+            max_price=300,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def buy_zoxs(isbn, title):
+def buy_zoxs(isbn):
     urls = [
         f"https://www.zoxs.de/ankauf/search?search={quote(isbn)}",
     ]
@@ -385,152 +415,86 @@ def buy_zoxs(isbn, title):
     trace = []
 
     for url in urls:
-        prices, status = get_prices_from_url(url, min_price=0.01, max_price=300)
-        trace.append(status)
-        all_prices.extend(prices[:5])
-
-    return safe_min(all_prices), trace
-
-
-def buy_1000books(isbn, title):
-    return None, ["disabled_fast_mode"]
-
-
-def buy_buchmaxe(isbn, title):
-    return None, ["disabled_fast_mode"]
-
-
-# -------------------------------------------------
-# Verkaufspreise schnell
-# -------------------------------------------------
-
-def sell_medimops(isbn, title):
-    urls = [
-        f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={quote(isbn)}",
-    ]
-
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={quote(title)}"
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.01,
+            max_price=300,
         )
-
-    all_prices = []
-    trace = []
-
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=1000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def sell_booklooker(isbn, title):
+# -------------------------------------------------
+# Verkaufspreise strict
+# -------------------------------------------------
+
+def sell_booklooker(isbn):
     urls = [
         f"https://www.booklooker.de/B%C3%BCcher/Angebote/isbn={quote(isbn)}",
     ]
 
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.booklooker.de/B%C3%BCcher/Angebote/titel={quote(title)}"
-        )
-
     all_prices = []
     trace = []
 
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=1000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=1000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def sell_vinted(isbn, title):
+def sell_medimops(isbn):
     urls = [
-        f"https://www.vinted.at/catalog?search_text={quote(isbn)}",
+        f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={quote(isbn)}",
     ]
-
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.vinted.at/catalog?search_text={quote(title)}"
-        )
 
     all_prices = []
     trace = []
 
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=1000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
-
-    return safe_median(all_prices), trace
-
-
-def sell_ebay(isbn, title):
-    urls = [
-        f"https://www.ebay.de/sch/i.html?_nkw={quote(isbn)}&_sacat=267&LH_BIN=1",
-    ]
-
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.ebay.de/sch/i.html?_nkw={quote(title)}&_sacat=267&LH_BIN=1"
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=1000,
         )
-
-    all_prices = []
-    trace = []
-
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=2000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
-
-    return safe_median(all_prices), trace
-
-
-def sell_amazon(isbn, title):
-    urls = [
-        f"https://www.amazon.de/s?k={quote(isbn)}&i=stripbooks",
-    ]
-
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.amazon.de/s?k={quote(title)}&i=stripbooks"
-        )
-
-    all_prices = []
-    trace = []
-
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=2000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def sell_rebuy(isbn, title):
+def sell_rebuy(isbn):
     urls = [
         f"https://www.rebuy.de/kaufen/suchen?q={quote(isbn)}",
     ]
 
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.rebuy.de/kaufen/suchen?q={quote(title)}"
-        )
-
     all_prices = []
     trace = []
 
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=1000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=1000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def sell_zoxs(isbn, title):
+def sell_zoxs(isbn):
     urls = [
         f"https://www.zoxs.de/kaufen/search?search={quote(isbn)}",
     ]
@@ -539,42 +503,119 @@ def sell_zoxs(isbn, title):
     trace = []
 
     for url in urls:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=1000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=1000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_min(all_prices), trace
 
 
-def sell_momox(isbn, title):
-    return None, ["momox_sells_via_medimops"]
-
-
-def sell_1000books(isbn, title):
-    return None, ["disabled_fast_mode"]
-
-
-def sell_buchmaxe(isbn, title):
-    return None, ["disabled_fast_mode"]
-
-
-def sell_willhaben(isbn, title):
+def sell_amazon(isbn):
     urls = [
-        f"https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz?keyword={quote(isbn)}",
+        f"https://www.amazon.de/s?k={quote(isbn)}&i=stripbooks",
     ]
-
-    if title and title != "Nicht gefunden":
-        urls.append(
-            f"https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz?keyword={quote(title)}"
-        )
 
     all_prices = []
     trace = []
 
-    for url in urls[:2]:
-        prices, status = get_prices_from_url(url, min_price=0.50, max_price=2000)
-        trace.append(status)
-        all_prices.extend(prices[:10])
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=2000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
+
+    return safe_min(all_prices), trace
+
+
+def sell_ebay_active(isbn):
+    urls = [
+        f"https://www.ebay.de/sch/i.html?_nkw={quote(isbn)}&_sacat=267&LH_BIN=1",
+    ]
+
+    all_prices = []
+    trace = []
+
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=2000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
+
+    return safe_median(all_prices), trace
+
+
+def sell_ebay_sold(isbn):
+    urls = [
+        f"https://www.ebay.de/sch/i.html?_nkw={quote(isbn)}&_sacat=267&LH_Sold=1&LH_Complete=1",
+    ]
+
+    all_prices = []
+    trace = []
+
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=2000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
+
+    return safe_median(all_prices), trace
+
+
+def sell_willhaben(isbn):
+    urls = [
+        f"https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz?keyword={quote(isbn)}",
+    ]
+
+    all_prices = []
+    trace = []
+
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=2000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
+
+    return safe_median(all_prices), trace
+
+
+def sell_vinted(isbn):
+    urls = [
+        f"https://www.vinted.at/catalog?search_text={quote(isbn)}",
+    ]
+
+    all_prices = []
+    trace = []
+
+    for url in urls:
+        prices, info = get_strict_prices_from_url(
+            url,
+            isbn,
+            min_price=0.50,
+            max_price=1000,
+        )
+        all_prices.extend(prices)
+        trace.append(info)
 
     return safe_median(all_prices), trace
 
@@ -587,8 +628,9 @@ def sell_willhaben(isbn, title):
 def home():
     return jsonify({
         "status": "Books2Cash API läuft",
-        "version": "prices_v4_fast_no_timeout",
+        "version": "prices_v5_strict_isbn_only",
         "hint": "Nutze /isbn/<isbn>",
+        "note": "Preise werden nur übernommen, wenn die exakte ISBN auf der Quellseite vorkommt.",
     })
 
 
@@ -597,73 +639,53 @@ def lookup(isbn):
     isbn = clean_isbn(isbn)
     info = get_book_info(isbn)
 
-    title = info.get("title", "")
-    author = info.get("author", "")
-
     jobs = {
-        "buy_momox": lambda: buy_momox(isbn, title),
-        "buy_rebuy": lambda: buy_rebuy(isbn, title),
-        "buy_zoxs": lambda: buy_zoxs(isbn, title),
-        "buy_1000books": lambda: buy_1000books(isbn, title),
-        "buy_buchmaxe": lambda: buy_buchmaxe(isbn, title),
+        "buy_momox": lambda: buy_momox(isbn),
+        "buy_rebuy": lambda: buy_rebuy(isbn),
+        "buy_zoxs": lambda: buy_zoxs(isbn),
 
-        "sell_momox": lambda: sell_momox(isbn, title),
-        "sell_rebuy": lambda: sell_rebuy(isbn, title),
-        "sell_zoxs": lambda: sell_zoxs(isbn, title),
-        "sell_1000books": lambda: sell_1000books(isbn, title),
-        "sell_buchmaxe": lambda: sell_buchmaxe(isbn, title),
-        "sell_medimops": lambda: sell_medimops(isbn, title),
-        "sell_amazon": lambda: sell_amazon(isbn, title),
-        "sell_ebay": lambda: sell_ebay(isbn, title),
-        "sell_booklooker": lambda: sell_booklooker(isbn, title),
-        "sell_willhaben": lambda: sell_willhaben(isbn, title),
-        "sell_vinted": lambda: sell_vinted(isbn, title),
+        "sell_medimops": lambda: sell_medimops(isbn),
+        "sell_rebuy": lambda: sell_rebuy(isbn),
+        "sell_zoxs": lambda: sell_zoxs(isbn),
+        "sell_amazon": lambda: sell_amazon(isbn),
+        "sell_ebay": lambda: sell_ebay_active(isbn),
+        "sell_ebay_sold": lambda: sell_ebay_sold(isbn),
+        "sell_booklooker": lambda: sell_booklooker(isbn),
+        "sell_willhaben": lambda: sell_willhaben(isbn),
+        "sell_vinted": lambda: sell_vinted(isbn),
     }
 
     results = {}
     debug = {}
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
-        future_map = {
-            executor.submit(fn): name
-            for name, fn in jobs.items()
-        }
-
-        for future in as_completed(future_map):
-            name = future_map[future]
-
-            try:
-                value, trace = future.result(timeout=7)
-                results[name] = value
-                debug[name] = {
-                    "status": "ok" if value is not None else "no_price",
-                    "trace": trace,
-                }
-
-            except Exception as e:
-                results[name] = None
-                debug[name] = {
-                    "status": "error",
-                    "error": str(e),
-                }
+    for name, fn in jobs.items():
+        try:
+            value, trace = fn()
+            results[name] = value
+            debug[name] = {
+                "status": "ok" if value is not None else "no_reliable_price",
+                "trace": trace,
+            }
+        except Exception as e:
+            results[name] = None
+            debug[name] = {
+                "status": "error",
+                "error": str(e),
+            }
 
     buy_values = [
         results.get("buy_momox"),
         results.get("buy_rebuy"),
         results.get("buy_zoxs"),
-        results.get("buy_1000books"),
-        results.get("buy_buchmaxe"),
     ]
 
     sell_values = [
-        results.get("sell_momox"),
+        results.get("sell_medimops"),
         results.get("sell_rebuy"),
         results.get("sell_zoxs"),
-        results.get("sell_1000books"),
-        results.get("sell_buchmaxe"),
-        results.get("sell_medimops"),
         results.get("sell_amazon"),
         results.get("sell_ebay"),
+        results.get("sell_ebay_sold"),
         results.get("sell_booklooker"),
         results.get("sell_willhaben"),
         results.get("sell_vinted"),
@@ -679,8 +701,8 @@ def lookup(isbn):
         if v is not None
     ]
 
-    best_buy = safe_max(buy_values_clean)
-    best_sell = safe_max(sell_values_clean)
+    best_buy = max(buy_values_clean) if buy_values_clean else None
+    best_sell = max(sell_values_clean) if sell_values_clean else None
 
     avg_sell = (
         sum(sell_values_clean) / len(sell_values_clean)
@@ -691,27 +713,29 @@ def lookup(isbn):
     return jsonify({
         "ok": True,
         "isbn": isbn,
-        "title": title,
-        "author": author,
+        "title": info.get("title", ""),
+        "author": info.get("author", ""),
         "source": info.get("source", "none"),
 
         "ankauf": {
             "momox": fmt(results.get("buy_momox")),
             "rebuy": fmt(results.get("buy_rebuy")),
             "zoxs": fmt(results.get("buy_zoxs")),
-            "1000books": fmt(results.get("buy_1000books")),
-            "buchmaxe": fmt(results.get("buy_buchmaxe")),
+            "1000books": None,
+            "buchmaxe": None,
         },
 
         "verkauf": {
-            "momox": fmt(results.get("sell_momox")),
+            "momox": None,
             "rebuy": fmt(results.get("sell_rebuy")),
             "zoxs": fmt(results.get("sell_zoxs")),
-            "1000books": fmt(results.get("sell_1000books")),
-            "buchmaxe": fmt(results.get("sell_buchmaxe")),
+            "1000books": None,
+            "buchmaxe": None,
             "medimops": fmt(results.get("sell_medimops")),
             "amazon": fmt(results.get("sell_amazon")),
+            "amazon_new": None,
             "ebay": fmt(results.get("sell_ebay")),
+            "ebay_sold": fmt(results.get("sell_ebay_sold")),
             "booklooker": fmt(results.get("sell_booklooker")),
             "willhaben": fmt(results.get("sell_willhaben")),
             "vinted": fmt(results.get("sell_vinted")),
