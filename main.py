@@ -3,10 +3,8 @@ import requests
 
 app = Flask(__name__)
 
-BOOK_CATEGORY_UUID = "64f6cfe0-3f10-4abd-8ba2-8c020da0e7d1"
-
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36",
+    "User-Agent": "Books2Cash/1.0",
     "Accept": "application/json,text/plain,*/*",
 }
 
@@ -18,184 +16,109 @@ def clean_isbn(isbn):
     ).upper()
 
 
-def get_google_books_info(isbn):
+def google_books(isbn):
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
-        r = requests.get(url, timeout=10)
+        r = requests.get(url, headers=HEADERS, timeout=10)
         data = r.json()
 
         items = data.get("items", [])
         if not items:
-            return {"title": "Nicht gefunden", "author": "-"}
+            return None
 
         info = items[0].get("volumeInfo", {})
-        title = info.get("title", "Nicht gefunden")
+
+        title = info.get("title", "").strip()
         authors = info.get("authors", [])
-        author = ", ".join(authors) if authors else "-"
+        author = ", ".join(authors).strip() if authors else "-"
 
-        return {"title": title, "author": author}
+        if not title:
+            return None
 
-    except Exception as e:
-        return {"title": "Nicht gefunden", "author": "-", "error": str(e)}
+        return {
+            "title": title,
+            "author": author,
+            "source": "google_books"
+        }
+
+    except Exception:
+        return None
 
 
-def try_bonavendi(isbn):
-    url = (
-        "https://api.bonavendi.at/rest/v2/products/sell"
-        f"?q={isbn}&productCategoryFilterUuids={BOOK_CATEGORY_UUID}"
-    )
-
+def openlibrary(isbn):
     try:
-        r = requests.get(url, headers=HEADERS, timeout=15)
+        url = f"https://openlibrary.org/isbn/{isbn}.json"
+        r = requests.get(url, headers=HEADERS, timeout=10)
 
-        if r.status_code == 403:
-            return {
-                "ok": False,
-                "blocked": True,
-                "error": "Bonavendi blockiert Railway mit HTTP 403.",
-                "ankauf": {},
-                "bonavendi": {},
-                "raw": []
-            }
+        if r.status_code != 200:
+            return None
 
-        if r.status_code < 200 or r.status_code >= 300:
-            return {
-                "ok": False,
-                "blocked": False,
-                "error": f"Bonavendi HTTP {r.status_code}: {r.text[:300]}",
-                "ankauf": {},
-                "bonavendi": {},
-                "raw": []
-            }
+        data = r.json()
 
-        search = r.json()
-        payload = search.get("payload", [])
+        title = data.get("title", "").strip()
+        author = "-"
 
-        if not payload:
-            return {
-                "ok": True,
-                "blocked": False,
-                "error": None,
-                "ankauf": {},
-                "bonavendi": {},
-                "raw": []
-            }
+        authors = data.get("authors", [])
+        if authors:
+            author_names = []
 
-        external_id = payload[0].get("externalId", isbn)
+            for a in authors:
+                key = a.get("key")
+                if key:
+                    try:
+                        ar = requests.get(
+                            f"https://openlibrary.org{key}.json",
+                            headers=HEADERS,
+                            timeout=6
+                        )
+                        if ar.status_code == 200:
+                            ad = ar.json()
+                            name = ad.get("name", "").strip()
+                            if name:
+                                author_names.append(name)
+                    except Exception:
+                        pass
 
-        product_url = f"https://api.bonavendi.at/rest/v2/products/{external_id}"
-        product_r = requests.get(product_url, headers=HEADERS, timeout=15)
+            if author_names:
+                author = ", ".join(author_names)
 
-        if product_r.status_code != 200:
-            return {
-                "ok": False,
-                "blocked": False,
-                "error": f"Bonavendi Produkt HTTP {product_r.status_code}",
-                "ankauf": {},
-                "bonavendi": {},
-                "raw": []
-            }
-
-        product = product_r.json()
-        product_payload = product.get("payload", {})
-        product_uuid = product_payload.get("uuid")
-
-        if not product_uuid:
-            return {
-                "ok": False,
-                "blocked": False,
-                "error": "Bonavendi Produkt-UUID fehlt.",
-                "ankauf": {},
-                "bonavendi": {},
-                "raw": []
-            }
-
-        offers_url = (
-            f"https://api.bonavendi.at/rest/v2/products/{product_uuid}/buyOffers"
-            "?maxAgeOfOfferInMinutes=0"
-        )
-
-        offers_r = requests.get(offers_url, headers=HEADERS, timeout=30)
-
-        if offers_r.status_code != 200:
-            return {
-                "ok": False,
-                "blocked": False,
-                "error": f"Bonavendi Offers HTTP {offers_r.status_code}",
-                "ankauf": {},
-                "bonavendi": {},
-                "raw": []
-            }
-
-        offers = offers_r.json().get("payload", [])
-
-        ankauf = {}
-        raw = []
-
-        for offer in offers:
-            if not offer.get("querySuccess"):
-                continue
-
-            price = offer.get("price")
-            if not price or price <= 0:
-                continue
-
-            partner = offer.get("partner", {})
-            name = partner.get("name", "unknown")
-            key = name.lower()
-
-            if "momox" in key:
-                key = "momox"
-            elif "rebuy" in key:
-                key = "rebuy"
-            elif "zoxs" in key:
-                key = "zoxs"
-            elif "buchmaxe" in key:
-                key = "buchmaxe"
-            elif "1000books" in key:
-                key = "1000books"
-            elif "medimops" in key:
-                key = "medimops"
-            else:
-                key = name
-
-            price = round(float(price), 2)
-
-            raw.append({
-                "partner": name,
-                "key": key,
-                "price": price
-            })
-
-            if key not in ankauf or price > ankauf[key]:
-                ankauf[key] = price
+        if not title:
+            return None
 
         return {
-            "ok": True,
-            "blocked": False,
-            "error": None,
-            "ankauf": ankauf,
-            "bonavendi": ankauf,
-            "raw": raw
+            "title": title,
+            "author": author,
+            "source": "openlibrary"
         }
 
-    except Exception as e:
-        return {
-            "ok": False,
-            "blocked": False,
-            "error": str(e),
-            "ankauf": {},
-            "bonavendi": {},
-            "raw": []
-        }
+    except Exception:
+        return None
+
+
+def get_book_info(isbn):
+    result = google_books(isbn)
+
+    if result:
+        return result
+
+    result = openlibrary(isbn)
+
+    if result:
+        return result
+
+    return {
+        "title": "Nicht gefunden",
+        "author": "-",
+        "source": "none"
+    }
 
 
 @app.route("/")
 def home():
     return jsonify({
         "status": "Books2Cash API läuft",
-        "mode": "safe_no_crash",
-        "note": "Wenn Bonavendi Railway blockiert, liefert die API trotzdem JSON statt HTTP 500."
+        "version": "book_lookup_v2",
+        "sources": ["google_books", "openlibrary"]
     })
 
 
@@ -203,17 +126,17 @@ def home():
 def lookup(isbn):
     isbn = clean_isbn(isbn)
 
-    google = get_google_books_info(isbn)
-    bonavendi = try_bonavendi(isbn)
+    info = get_book_info(isbn)
 
     return jsonify({
         "ok": True,
         "isbn": isbn,
-        "title": google.get("title", "Nicht gefunden"),
-        "author": google.get("author", "-"),
-        "ankauf": bonavendi.get("ankauf", {}),
-        "bonavendi": bonavendi.get("bonavendi", {}),
-        "bonavendi_raw": bonavendi.get("raw", []),
+        "title": info.get("title", "Nicht gefunden"),
+        "author": info.get("author", "-"),
+        "source": info.get("source", "none"),
+        "ankauf": {},
+        "bonavendi": {},
+        "bonavendi_raw": [],
         "verkauf": {
             "medimops": None,
             "zvab": None,
@@ -221,9 +144,9 @@ def lookup(isbn):
             "amazon": None,
             "ebay": None
         },
-        "blocked": bonavendi.get("blocked", False),
-        "error": bonavendi.get("error"),
-        "hinweis": "Bonavendi blockiert Railway aktuell mit HTTP 403." if bonavendi.get("blocked") else ""
+        "blocked": False,
+        "error": None,
+        "hinweis": ""
     })
 
 
