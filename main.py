@@ -4,62 +4,198 @@ import re
 import xml.etree.ElementTree as ET
 from bs4 import BeautifulSoup
 from statistics import median
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from urllib.parse import quote
 
 app = Flask(__name__)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36",
-    "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+    "User-Agent": (
+        "Mozilla/5.0 (Linux; Android 14; Mobile) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Mobile Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
+    "Accept-Language": "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
-
-def clean_isbn(isbn):
-    return re.sub(r"[^0-9Xx]", "", str(isbn)).upper()
+TIMEOUT = 8
 
 
-def price_to_float(text):
-    if not text:
+def clean_isbn(value):
+    return re.sub(r"[^0-9Xx]", "", str(value)).upper()
+
+
+def normalize_price_text(value):
+    if value is None:
         return None
 
-    m = re.search(r"(\d{1,4}(?:[.,]\d{2}))", text)
-    if not m:
+    value = str(value)
+    value = value.replace("\xa0", " ")
+    value = value.replace("EUR", "€")
+    value = value.replace("Euro", "€")
+    value = value.strip()
+
+    if not value or value.lower() in ["none", "null", "-", "nan"]:
         return None
+
+    match = re.search(r"(\d{1,4}(?:[.,]\d{1,2}))", value)
+    if not match:
+        return None
+
+    raw = match.group(1).replace(",", ".")
 
     try:
-        return float(m.group(1).replace(",", "."))
+        number = float(raw)
     except Exception:
         return None
+
+    if number <= 0 or number > 2000:
+        return None
+
+    return number
 
 
 def fmt(value):
-    if value is None:
+    number = normalize_price_text(value)
+    if number is None:
         return None
-    return f"{value:.2f}".replace(".", ",")
+
+    return f"{number:.2f}".replace(".", ",")
 
 
-def extract_prices(text):
+def fetch(url, timeout=TIMEOUT):
+    try:
+        r = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=timeout,
+            allow_redirects=True,
+        )
+
+        if r.status_code != 200:
+            return {
+                "ok": False,
+                "status": r.status_code,
+                "url": url,
+                "text": "",
+            }
+
+        return {
+            "ok": True,
+            "status": r.status_code,
+            "url": url,
+            "text": r.text,
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "status": "exception",
+            "url": url,
+            "text": "",
+            "error": str(e),
+        }
+
+
+def html_text(html):
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+
+        for tag in soup(["script", "style", "noscript"]):
+            tag.decompose()
+
+        return soup.get_text(" ", strip=True)
+
+    except Exception:
+        return ""
+
+
+def extract_all_prices(text):
+    if not text:
+        return []
+
+    text = text.replace("\xa0", " ")
+
+    patterns = [
+        r"(\d{1,4}[,.]\d{2})\s*€",
+        r"€\s*(\d{1,4}[,.]\d{2})",
+        r"(\d{1,4}[,.]\d{2})\s*EUR",
+    ]
+
     prices = []
-    for m in re.finditer(r"(\d{1,4}[,.]\d{2})\s?€", text):
-        v = price_to_float(m.group(1))
-        if v is not None and 0.30 <= v <= 500:
-            prices.append(v)
+
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            number = normalize_price_text(match.group(1))
+            if number is not None and 0.10 <= number <= 1000:
+                prices.append(number)
+
     return prices
 
 
-def fetch_url(url, timeout=12):
-    try:
-        r = requests.get(url, headers=HEADERS, timeout=timeout)
-        if r.status_code != 200:
-            return None
-        return r.text
-    except Exception:
+def extract_price_near_keywords(text, keywords):
+    if not text:
         return None
 
+    clean = text.replace("\xa0", " ")
+
+    candidates = []
+
+    for keyword in keywords:
+        pos = clean.lower().find(keyword.lower())
+
+        if pos >= 0:
+            start = max(0, pos - 300)
+            end = min(len(clean), pos + 700)
+            window = clean[start:end]
+
+            prices = extract_all_prices(window)
+            candidates.extend(prices)
+
+    if not candidates:
+        return None
+
+    return min(candidates)
+
+
+def safe_min(prices):
+    prices = [p for p in prices if p is not None and p > 0]
+
+    if not prices:
+        return None
+
+    return min(prices)
+
+
+def safe_median(prices):
+    prices = [p for p in prices if p is not None and p > 0]
+
+    if not prices:
+        return None
+
+    return median(prices)
+
+
+def safe_max(prices):
+    prices = [p for p in prices if p is not None and p > 0]
+
+    if not prices:
+        return None
+
+    return max(prices)
+
+
+# -------------------------------------------------
+# Buchdaten
+# -------------------------------------------------
 
 def fetch_google_books(isbn):
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q=isbn:{isbn}"
-        r = requests.get(url, headers=HEADERS, timeout=10)
+        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
         data = r.json()
 
         items = data.get("items", [])
@@ -67,6 +203,7 @@ def fetch_google_books(isbn):
             return None
 
         info = items[0].get("volumeInfo", {})
+
         title = info.get("title", "").strip()
         authors = info.get("authors", [])
         author = ", ".join(authors).strip() if authors else "-"
@@ -77,8 +214,9 @@ def fetch_google_books(isbn):
         return {
             "title": title,
             "author": author,
-            "source": "google_books"
+            "source": "google_books",
         }
+
     except Exception:
         return None
 
@@ -86,31 +224,40 @@ def fetch_google_books(isbn):
 def fetch_openlibrary(isbn):
     try:
         url = f"https://openlibrary.org/isbn/{isbn}.json"
-        r = requests.get(url, headers=HEADERS, timeout=10)
+        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
 
         if r.status_code != 200:
             return None
 
         data = r.json()
-        title = data.get("title", "").strip()
 
+        title = data.get("title", "").strip()
         if not title:
             return None
 
         author = "-"
+
         author_names = []
 
         for a in data.get("authors", []):
             key = a.get("key")
-            if key:
-                try:
-                    ar = requests.get(f"https://openlibrary.org{key}.json", headers=HEADERS, timeout=6)
-                    if ar.status_code == 200:
-                        name = ar.json().get("name", "").strip()
-                        if name:
-                            author_names.append(name)
-                except Exception:
-                    pass
+            if not key:
+                continue
+
+            try:
+                ar = requests.get(
+                    f"https://openlibrary.org{key}.json",
+                    headers=HEADERS,
+                    timeout=5,
+                )
+
+                if ar.status_code == 200:
+                    name = ar.json().get("name", "").strip()
+                    if name:
+                        author_names.append(name)
+
+            except Exception:
+                pass
 
         if author_names:
             author = ", ".join(author_names)
@@ -118,8 +265,9 @@ def fetch_openlibrary(isbn):
         return {
             "title": title,
             "author": author,
-            "source": "openlibrary"
+            "source": "openlibrary",
         }
+
     except Exception:
         return None
 
@@ -133,7 +281,8 @@ def fetch_dnb(isbn):
             "&recordSchema=MARC21-xml"
         )
 
-        r = requests.get(url, headers=HEADERS, timeout=15)
+        r = requests.get(url, headers=HEADERS, timeout=TIMEOUT)
+
         if r.status_code != 200:
             return None
 
@@ -152,9 +301,9 @@ def fetch_dnb(isbn):
             if tag == "245":
                 parts = []
                 for sub in field.findall("marc:subfield", ns):
-                    if sub.attrib.get("code") in ["a", "b"]:
-                        if sub.text:
-                            parts.append(sub.text.strip())
+                    code = sub.attrib.get("code")
+                    if code in ["a", "b"] and sub.text:
+                        parts.append(sub.text.strip())
                 if parts:
                     title = " ".join(parts).strip(" /:")
 
@@ -169,8 +318,9 @@ def fetch_dnb(isbn):
         return {
             "title": title,
             "author": author or "-",
-            "source": "dnb"
+            "source": "dnb",
         }
+
     except Exception:
         return None
 
@@ -184,245 +334,464 @@ def get_book_info(isbn):
     return {
         "title": "Nicht gefunden",
         "author": "-",
-        "source": "none"
+        "source": "none",
     }
 
 
-def fetch_rebuy_buy(isbn):
-    html = fetch_url(f"https://www.rebuy.de/verkaufen/suchen?query={isbn}")
-    if not html:
-        return None
+# -------------------------------------------------
+# Ankaufspreise
+# -------------------------------------------------
 
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
+def buy_momox(isbn, title):
+    urls = [
+        f"https://www.momox.de/offer/{isbn}",
+        f"https://www.momox.de/verkaufen/?search={quote(isbn)}",
+        f"https://www.momox.de/verkaufen/buecher/?search={quote(isbn)}",
+    ]
 
-    if not prices:
-        return None
+    all_prices = []
 
-    return min(prices)
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
 
+        price = extract_price_near_keywords(
+            text,
+            [
+                "ankaufspreis",
+                "angebot",
+                "verkaufspreis",
+                "wir zahlen",
+                "direkt verkaufen",
+                "preis",
+            ],
+        )
 
-def fetch_momox_buy(isbn):
-    html = fetch_url(f"https://www.momox.de/offer/{isbn}")
-    if not html:
-        return None
+        if price is not None:
+            all_prices.append(price)
 
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
+        all_prices.extend(extract_all_prices(text)[:5])
 
-    if not prices:
-        return None
-
-    return min(prices)
-
-
-def fetch_zoxs_buy(isbn):
-    html = fetch_url(f"https://www.zoxs.de/ankauf/search?search={isbn}")
-    if not html:
-        return None
-
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
-
-    if not prices:
-        return None
-
-    return min(prices)
+    return safe_min(all_prices)
 
 
-def fetch_medimops_sell(isbn, title):
-    html = fetch_url(f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={isbn}")
-    if not html and title:
-        html = fetch_url(f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={requests.utils.quote(title)}")
+def buy_rebuy(isbn, title):
+    urls = [
+        f"https://www.rebuy.de/verkaufen/suchen?query={quote(isbn)}",
+        f"https://www.rebuy.de/verkaufen/suchen?q={quote(isbn)}",
+    ]
 
-    if not html:
-        return None
+    all_prices = []
 
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
 
-    if not prices:
-        return None
+        price = extract_price_near_keywords(
+            text,
+            [
+                "unser angebot",
+                "angebot",
+                "ankaufspreis",
+                "verkaufswert",
+                "sofort angebotspreis",
+                "preisinfo",
+            ],
+        )
 
-    return min(prices)
+        if price is not None:
+            all_prices.append(price)
 
+        prices = extract_all_prices(text)
 
-def fetch_ebay_sell(isbn, title):
-    query = isbn if isbn else title
-    if not query:
-        return None
+        filtered = [
+            p for p in prices
+            if 0.10 <= p <= 100
+        ]
 
-    url = f"https://www.ebay.de/sch/i.html?_nkw={requests.utils.quote(query)}&_sacat=267&LH_BIN=1"
-    html = fetch_url(url)
+        all_prices.extend(filtered[:5])
 
-    if not html:
-        return None
-
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(" ", strip=True)
-
-    prices = extract_prices(text)
-
-    cleaned = []
-    for p in prices:
-        if 1 <= p <= 300:
-            cleaned.append(p)
-
-    if not cleaned:
-        return None
-
-    return median(cleaned[:10])
+    return safe_min(all_prices)
 
 
-def fetch_amazon_sell(isbn, title):
-    query = isbn if isbn else title
-    if not query:
-        return None
+def buy_zoxs(isbn, title):
+    urls = [
+        f"https://www.zoxs.de/ankauf/search?search={quote(isbn)}",
+        f"https://www.zoxs.de/sell/search?search={quote(isbn)}",
+    ]
 
-    url = f"https://www.amazon.de/s?k={requests.utils.quote(query)}&i=stripbooks"
-    html = fetch_url(url)
+    all_prices = []
 
-    if not html:
-        return None
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
 
-    soup = BeautifulSoup(html, "html.parser")
-    text = soup.get_text(" ", strip=True)
+        price = extract_price_near_keywords(
+            text,
+            [
+                "ankauf",
+                "ankaufspreis",
+                "wir zahlen",
+                "verkaufen",
+                "angebot",
+            ],
+        )
 
-    prices = extract_prices(text)
+        if price is not None:
+            all_prices.append(price)
 
-    cleaned = []
-    for p in prices:
-        if 1 <= p <= 500:
-            cleaned.append(p)
+        all_prices.extend(extract_all_prices(text)[:5])
 
-    if not cleaned:
-        return None
-
-    return min(cleaned[:10])
-
-
-def fetch_booklooker_sell(isbn, title):
-    query = isbn if isbn else title
-    if not query:
-        return None
-
-    url = f"https://www.booklooker.de/B%C3%BCcher/Angebote/isbn={requests.utils.quote(isbn)}"
-    html = fetch_url(url)
-
-    if not html:
-        return None
-
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
-
-    cleaned = []
-    for p in prices:
-        if 1 <= p <= 300:
-            cleaned.append(p)
-
-    if not cleaned:
-        return None
-
-    return min(cleaned)
+    return safe_min(all_prices)
 
 
-def fetch_willhaben_sell(isbn, title):
-    query = isbn if isbn else title
-    if not query:
-        return None
+def buy_buchmaxe(isbn, title):
+    urls = [
+        f"https://www.buchmaxe.de/ankauf/search?search={quote(isbn)}",
+        f"https://www.buchmaxe.de/suche?q={quote(isbn)}",
+    ]
 
-    url = f"https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz?keyword={requests.utils.quote(query)}"
-    html = fetch_url(url)
+    all_prices = []
 
-    if not html:
-        return None
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
 
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
+        price = extract_price_near_keywords(
+            text,
+            [
+                "ankaufspreis",
+                "ankauf",
+                "angebot",
+                "verkaufen",
+            ],
+        )
 
-    cleaned = []
-    for p in prices:
-        if 1 <= p <= 500:
-            cleaned.append(p)
+        if price is not None:
+            all_prices.append(price)
 
-    if not cleaned:
-        return None
+        all_prices.extend(extract_all_prices(text)[:5])
 
-    return median(cleaned[:10])
+    return safe_min(all_prices)
 
 
-def fetch_vinted_sell(isbn, title):
-    query = isbn if isbn else title
-    if not query:
-        return None
+def buy_1000books(isbn, title):
+    urls = [
+        f"https://www.1000books.de/?s={quote(isbn)}",
+        f"https://www.1000books.de/search?q={quote(isbn)}",
+    ]
 
-    url = f"https://www.vinted.at/catalog?search_text={requests.utils.quote(query)}"
-    html = fetch_url(url)
+    all_prices = []
 
-    if not html:
-        return None
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
 
-    text = BeautifulSoup(html, "html.parser").get_text(" ", strip=True)
-    prices = extract_prices(text)
+        price = extract_price_near_keywords(
+            text,
+            [
+                "ankauf",
+                "ankaufspreis",
+                "angebot",
+                "verkaufen",
+            ],
+        )
 
-    cleaned = []
-    for p in prices:
-        if 1 <= p <= 300:
-            cleaned.append(p)
+        if price is not None:
+            all_prices.append(price)
 
-    if not cleaned:
-        return None
+        all_prices.extend(extract_all_prices(text)[:5])
 
-    return median(cleaned[:10])
+    return safe_min(all_prices)
 
+
+# -------------------------------------------------
+# Verkaufspreise
+# -------------------------------------------------
+
+def sell_medimops(isbn, title):
+    urls = [
+        f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={quote(isbn)}",
+    ]
+
+    if title and title != "Nicht gefunden":
+        urls.append(
+            f"https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={quote(title)}"
+        )
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 500]
+        all_prices.extend(filtered[:10])
+
+    return safe_min(all_prices)
+
+
+def sell_rebuy(isbn, title):
+    query = isbn or title
+
+    urls = [
+        f"https://www.rebuy.de/kaufen/suchen?q={quote(query)}",
+        f"https://www.rebuy.de/kaufen/suchen?query={quote(query)}",
+    ]
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 500]
+        all_prices.extend(filtered[:10])
+
+    return safe_min(all_prices)
+
+
+def sell_momox(isbn, title):
+    # momox verkauft meist über medimops; deshalb wird hier nichts erfunden.
+    return None
+
+
+def sell_zoxs(isbn, title):
+    query = isbn or title
+
+    urls = [
+        f"https://www.zoxs.de/kaufen/search?search={quote(query)}",
+        f"https://www.zoxs.de/search?search={quote(query)}",
+    ]
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 500]
+        all_prices.extend(filtered[:10])
+
+    return safe_min(all_prices)
+
+
+def sell_buchmaxe(isbn, title):
+    return None
+
+
+def sell_1000books(isbn, title):
+    return None
+
+
+def sell_amazon(isbn, title):
+    query = isbn or title
+
+    urls = [
+        f"https://www.amazon.de/s?k={quote(query)}&i=stripbooks",
+    ]
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 1000]
+        all_prices.extend(filtered[:10])
+
+    return safe_min(all_prices)
+
+
+def sell_ebay(isbn, title):
+    query = isbn or title
+
+    urls = [
+        f"https://www.ebay.de/sch/i.html?_nkw={quote(query)}&_sacat=267&LH_BIN=1",
+        f"https://www.ebay.de/sch/i.html?_nkw={quote(query)}&_sacat=267&LH_Sold=1&LH_Complete=1",
+    ]
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 1000]
+        all_prices.extend(filtered[:15])
+
+    return safe_median(all_prices[:20])
+
+
+def sell_booklooker(isbn, title):
+    urls = [
+        f"https://www.booklooker.de/B%C3%BCcher/Angebote/isbn={quote(isbn)}",
+    ]
+
+    if title and title != "Nicht gefunden":
+        urls.append(
+            f"https://www.booklooker.de/B%C3%BCcher/Angebote/titel={quote(title)}"
+        )
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 500]
+        all_prices.extend(filtered[:15])
+
+    return safe_min(all_prices)
+
+
+def sell_willhaben(isbn, title):
+    query = isbn or title
+
+    urls = [
+        f"https://www.willhaben.at/iad/kaufen-und-verkaufen/marktplatz?keyword={quote(query)}",
+    ]
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 1000]
+        all_prices.extend(filtered[:15])
+
+    return safe_median(all_prices[:15])
+
+
+def sell_vinted(isbn, title):
+    query = isbn or title
+
+    urls = [
+        f"https://www.vinted.at/catalog?search_text={quote(query)}",
+        f"https://www.vinted.de/catalog?search_text={quote(query)}",
+    ]
+
+    all_prices = []
+
+    for url in urls:
+        result = fetch(url)
+        text = html_text(result["text"])
+
+        prices = extract_all_prices(text)
+        filtered = [p for p in prices if 0.50 <= p <= 500]
+        all_prices.extend(filtered[:15])
+
+    return safe_median(all_prices[:15])
+
+
+# -------------------------------------------------
+# API
+# -------------------------------------------------
 
 @app.route("/")
 def home():
     return jsonify({
         "status": "Books2Cash API läuft",
-        "version": "prices_v1",
-        "sources": [
-            "google_books",
-            "openlibrary",
-            "dnb",
-            "rebuy",
-            "momox",
-            "zoxs",
-            "medimops",
-            "ebay",
-            "amazon",
-            "booklooker",
-            "willhaben",
-            "vinted"
-        ]
+        "version": "prices_v2_full",
+        "hint": "Nutze /isbn/<isbn>",
     })
 
 
 @app.route("/isbn/<isbn>")
 def lookup(isbn):
     isbn = clean_isbn(isbn)
-
     info = get_book_info(isbn)
+
     title = info.get("title", "")
     author = info.get("author", "")
 
-    momox_buy = fetch_momox_buy(isbn)
-    rebuy_buy = fetch_rebuy_buy(isbn)
-    zoxs_buy = fetch_zoxs_buy(isbn)
+    jobs = {
+        "buy_momox": lambda: buy_momox(isbn, title),
+        "buy_rebuy": lambda: buy_rebuy(isbn, title),
+        "buy_zoxs": lambda: buy_zoxs(isbn, title),
+        "buy_1000books": lambda: buy_1000books(isbn, title),
+        "buy_buchmaxe": lambda: buy_buchmaxe(isbn, title),
 
-    medimops_sell = fetch_medimops_sell(isbn, title)
-    ebay_sell = fetch_ebay_sell(isbn, title)
-    amazon_sell = fetch_amazon_sell(isbn, title)
-    booklooker_sell = fetch_booklooker_sell(isbn, title)
-    willhaben_sell = fetch_willhaben_sell(isbn, title)
-    vinted_sell = fetch_vinted_sell(isbn, title)
+        "sell_momox": lambda: sell_momox(isbn, title),
+        "sell_rebuy": lambda: sell_rebuy(isbn, title),
+        "sell_zoxs": lambda: sell_zoxs(isbn, title),
+        "sell_1000books": lambda: sell_1000books(isbn, title),
+        "sell_buchmaxe": lambda: sell_buchmaxe(isbn, title),
+        "sell_medimops": lambda: sell_medimops(isbn, title),
+        "sell_amazon": lambda: sell_amazon(isbn, title),
+        "sell_ebay": lambda: sell_ebay(isbn, title),
+        "sell_booklooker": lambda: sell_booklooker(isbn, title),
+        "sell_willhaben": lambda: sell_willhaben(isbn, title),
+        "sell_vinted": lambda: sell_vinted(isbn, title),
+    }
 
-    ankauf_values = [v for v in [momox_buy, rebuy_buy, zoxs_buy] if v is not None]
-    verkauf_values = [v for v in [medimops_sell, ebay_sell, amazon_sell, booklooker_sell, willhaben_sell, vinted_sell] if v is not None]
+    results = {}
+    debug = {}
 
-    best_buy = max(ankauf_values) if ankauf_values else None
-    best_sell = max(verkauf_values) if verkauf_values else None
-    avg_sell = sum(verkauf_values) / len(verkauf_values) if verkauf_values else None
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_map = {
+            executor.submit(fn): name
+            for name, fn in jobs.items()
+        }
+
+        for future in as_completed(future_map):
+            name = future_map[future]
+
+            try:
+                value = future.result(timeout=12)
+                results[name] = value
+                debug[name] = "ok" if value is not None else "no_price"
+            except Exception as e:
+                results[name] = None
+                debug[name] = f"error: {str(e)}"
+
+    buy_values = [
+        results.get("buy_momox"),
+        results.get("buy_rebuy"),
+        results.get("buy_zoxs"),
+        results.get("buy_1000books"),
+        results.get("buy_buchmaxe"),
+    ]
+
+    sell_values = [
+        results.get("sell_momox"),
+        results.get("sell_rebuy"),
+        results.get("sell_zoxs"),
+        results.get("sell_1000books"),
+        results.get("sell_buchmaxe"),
+        results.get("sell_medimops"),
+        results.get("sell_amazon"),
+        results.get("sell_ebay"),
+        results.get("sell_booklooker"),
+        results.get("sell_willhaben"),
+        results.get("sell_vinted"),
+    ]
+
+    buy_values_clean = [
+        v for v in buy_values
+        if v is not None
+    ]
+
+    sell_values_clean = [
+        v for v in sell_values
+        if v is not None
+    ]
+
+    best_buy = safe_max(buy_values_clean)
+    best_sell = safe_max(sell_values_clean)
+    avg_sell = (
+        sum(sell_values_clean) / len(sell_values_clean)
+        if sell_values_clean
+        else None
+    )
 
     return jsonify({
         "ok": True,
@@ -432,35 +801,40 @@ def lookup(isbn):
         "source": info.get("source", "none"),
 
         "ankauf": {
-            "momox": fmt(momox_buy),
-            "rebuy": fmt(rebuy_buy),
-            "zoxs": fmt(zoxs_buy),
-            "1000books": None,
-            "buchmaxe": None
+            "momox": fmt(results.get("buy_momox")),
+            "rebuy": fmt(results.get("buy_rebuy")),
+            "zoxs": fmt(results.get("buy_zoxs")),
+            "1000books": fmt(results.get("buy_1000books")),
+            "buchmaxe": fmt(results.get("buy_buchmaxe")),
         },
 
         "verkauf": {
-            "momox": None,
-            "rebuy": None,
-            "medimops": fmt(medimops_sell),
-            "amazon": fmt(amazon_sell),
-            "ebay": fmt(ebay_sell),
-            "booklooker": fmt(booklooker_sell),
-            "willhaben": fmt(willhaben_sell),
-            "vinted": fmt(vinted_sell)
+            "momox": fmt(results.get("sell_momox")),
+            "rebuy": fmt(results.get("sell_rebuy")),
+            "zoxs": fmt(results.get("sell_zoxs")),
+            "1000books": fmt(results.get("sell_1000books")),
+            "buchmaxe": fmt(results.get("sell_buchmaxe")),
+            "medimops": fmt(results.get("sell_medimops")),
+            "amazon": fmt(results.get("sell_amazon")),
+            "ebay": fmt(results.get("sell_ebay")),
+            "booklooker": fmt(results.get("sell_booklooker")),
+            "willhaben": fmt(results.get("sell_willhaben")),
+            "vinted": fmt(results.get("sell_vinted")),
         },
 
         "analyse": {
             "best_buy": fmt(best_buy),
             "best_sell": fmt(best_sell),
-            "avg_sell": fmt(avg_sell)
+            "avg_sell": fmt(avg_sell),
         },
 
-        "rebuy_price": fmt(rebuy_buy),
-        "blocked": False,
-        "error": None
+        "debug": debug,
+        "error": None,
     })
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8080)
+    app.run(
+        host="0.0.0.0",
+        port=8080
+    )
