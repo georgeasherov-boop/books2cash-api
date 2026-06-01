@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v17_dvd_resolver_verified"
+VERSION = "books2cash_backend_v18_media_cleanup_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/17.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/18.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,22 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "9006472027690": {
+        "title": "Everyday Rebellion",
+        "details": "DVD · Dokumentarfilm · Österreich/Schweiz/Deutschland 2013",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
+    "4010324025463": {
+        "title": "Candy",
+        "details": "DVD · Deutsche und englische Version",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "4006680034072": {
         "title": "Three Seasons",
         "details": "Regie: Tony Bui · DVD · Drama · Vietnam/USA 1999 · FSK 12 · 104 Minuten",
@@ -209,6 +225,9 @@ def cleanup_title(title):
         r"\s+\[(DVD|Blu-ray|CD)\].*$",
         r"\s+\((DVD|Blu-ray|CD)\).*$",
         r"\s*,\s*\d{8,14}$",
+        r"\s*\[\s*(?:NON-USA FORMAT|PAL|Reg\.?0|Region|Import|Germany|UK Import|US Import|NTSC).*?\]\s*$",
+        r"\s*,?\s*\d+\s*(?:DVD|Dvd|Blu-ray|Blu Ray|Bluray|CD)\s*,\s*(?:Deutsche|Deutsch|Englische|English|Französische|Franzoesische).*?$",
+        r"\s*,?\s*\d+\s*(?:DVD|Dvd|Blu-ray|Blu Ray|Bluray|CD)\s*$",
     ]
     for pattern in patterns:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" -|:,;")
@@ -226,9 +245,22 @@ def split_title_creator(raw_title):
     return title, creator
 
 
+def normalize_duplicate_title(title):
+    t = cleanup_title(title)
+    # Convert "Candy - Candy" or "Candy - Candy, ..." to "Candy".
+    parts = [p.strip(" -|:;,. ") for p in re.split(r"\s+-\s+", t) if p.strip(" -|:;,. ")]
+    if len(parts) >= 2:
+        first = parts[0]
+        second = parts[1]
+        second_clean = re.sub(r",.*$", "", second).strip()
+        if first.lower() == second_clean.lower():
+            return first
+    return t
+
+
 def normalize_title_order(title):
     # Convert catalog form "Haunted Airman The" -> "The Haunted Airman".
-    t = cleanup_title(title)
+    t = normalize_duplicate_title(cleanup_title(title))
     match = re.fullmatch(r"(.+?)\s+(The|A|An|Der|Die|Das|Le|La|Les|Il|Lo|Gli|I|El|Los|Las)", t, flags=re.IGNORECASE)
     if match:
         body = match.group(1).strip(" ,")
@@ -551,7 +583,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/17.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/18.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -625,18 +657,26 @@ def fetch_upcitemdb(code):
             category = item.get("category", "") or ""
             description = item.get("description", "") or ""
             item_type = detect_item_type(c, raw_title, f"{brand} {category} {description}", "upcitemdb")
-            if "dvd & blu-ray players" in category.lower():
+            raw_lower = raw_title.lower()
+            # UPCitemdb often misclassifies DVDs/Blu-rays through generic shop categories.
+            # If the actual title says DVD and not Blu-ray, force DVD.
+            if re.search(r"\b(dvd|dvd-rom|d v d)\b", raw_lower) and not re.search(r"blu[ -]?ray|bluray", raw_lower):
+                item_type = "DVD"
+            bad_category_words = ["dvd & blu-ray players", "vehicles", "vehicle parts", "accessories", "electronics > video > video players"]
+            if any(w in category.lower() for w in bad_category_words):
                 category = ""
-                brand = ""
+                if brand.lower() in ["colombia", "columbia", "sony pictures home entertainment"]:
+                    brand = ""
             medium = item_type if item_type in ["DVD", "Blu-ray", "CD", "Schallplatte"] else ""
             details_parts = []
             if creator:
                 details_parts.append(creator)
             if medium:
                 details_parts.append(medium)
-            if brand and brand.lower() not in ["colombia", "columbia", "sony pictures home entertainment"]:
+            if brand and brand.lower() not in ["colombia", "columbia", "sony pictures home entertainment", "media"]:
                 details_parts.append(brand)
-            if category and "media" not in category.lower() and "dvd" not in category.lower():
+            # Only keep category for non-media product types where it is actually useful.
+            if category and item_type not in ["DVD", "Blu-ray", "CD", "Schallplatte"]:
                 details_parts.append(category)
             details = " · ".join(details_parts) if details_parts else (medium or item_type or "-")
             confidence = 76
@@ -1098,7 +1138,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V17 ergänzt gezielte DVD/EAN-Resolver für Filminfos/CeDe/Product-Search/Melando und bereinigt UPC/Shop-Rohtitel."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V18 bereinigt UPC-/Shop-Rohtitel stärker, entfernt Import-/Condition-/Kategorie-Müll und priorisiert saubere Medienfelder."})
 
 
 @app.route("/health")
