@@ -38,22 +38,22 @@ KNOWN_ITEMS = {
         "confidence": 99,
     },
     "4042564128512": {
-        "title": "Der Duft der grÃ¼nen Papaya",
-        "author": "Regie: Tran Anh Hung Â· DVD Â· Frankreich 1993 Â· FSK 6 Â· ca. 100 Minuten",
+        "title": "Der Duft der grünen Papaya",
+        "author": "Regie: Tran Anh Hung · DVD · Frankreich 1993 · FSK 6 · ca. 100 Minuten",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
     },
     "7321925014167": {
-        "title": "Sex and the City â€“ Der Film",
-        "author": "Regie: Michael Patrick King Â· DVD Â· FSK 12 Â· 139 Minuten",
+        "title": "Sex and the City – Der Film",
+        "author": "Regie: Michael Patrick King · DVD · FSK 12 · 139 Minuten",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
     },
     "9782266353267": {
         "title": "Les Assassins de l'aube",
-        "author": "Michel Bussi Â· Pocket Â· FranzÃ¶sisches Buch Â· ISBN-10: 2266353268",
+        "author": "Michel Bussi · Pocket · Französisches Buch · ISBN-10: 2266353268",
         "item_type": "Buch",
         "source": "known_book_cache",
         "confidence": 99,
@@ -89,7 +89,7 @@ def isbn13_to_isbn10(isbn13):
 def normalize_price(value):
     if value is None:
         return None
-    text = str(value).replace("\xa0", " ").replace("EUR", "â‚¬").replace("Euro", "â‚¬").strip()
+    text = str(value).replace("\xa0", " ").replace("EUR", "€").replace("Euro", "€").strip()
     if not text or text.lower() in {"none", "null", "-", "nan"}:
         return None
     match = re.search(r"(\d{1,5}(?:[.,]\d{1,2}))", text)
@@ -145,8 +145,8 @@ def extract_prices(text):
         return []
     text = text.replace("\xa0", " ")
     patterns = [
-        r"(\d{1,5}[,.]\d{2})\s*â‚¬",
-        r"â‚¬\s*(\d{1,5}[,.]\d{2})",
+        r"(\d{1,5}[,.]\d{2})\s*€",
+        r"€\s*(\d{1,5}[,.]\d{2})",
         r"(\d{1,5}[,.]\d{2})\s*EUR",
     ]
     prices = []
@@ -229,7 +229,7 @@ def detect_item_type(code, title="", author="", source=""):
         return "Brettspiel"
     if any(x in text for x in ["comic", "manga", "graphic novel"]):
         return "Comic"
-    if any(x in text for x in ["pokemon", "pokÃ©mon", "trading card", "sammelkarte", "funko", "lego", "collectible"]):
+    if any(x in text for x in ["pokemon", "pokémon", "trading card", "sammelkarte", "funko", "lego", "collectible"]):
         return "Sammelobjekt"
     return "Sonstiges"
 
@@ -276,7 +276,7 @@ def fetch_google_books(code):
                     published = info.get("publishedDate", "") or ""
                     author = ", ".join(authors).strip() if authors else "-"
                     if publisher or published:
-                        author = f"{author} Â· {publisher} {published}".strip(" Â·")
+                        author = f"{author} · {publisher} {published}".strip(" ·")
                     result = make_result(title, author, f"google_books_{country}", "Buch", 88)
                     if result:
                         best = result
@@ -306,7 +306,7 @@ def fetch_openlibrary(code):
             publishers = [p.get("name", "") for p in item.get("publishers", []) if p.get("name")]
             author = ", ".join(authors) if authors else "-"
             if publishers or item.get("publish_date"):
-                author = f"{author} Â· {', '.join(publishers)} {item.get('publish_date', '')}".strip(" Â·")
+                author = f"{author} · {', '.join(publishers)} {item.get('publish_date', '')}".strip(" ·")
             return make_result(title, author, "openlibrary", "Buch", 84)
     except Exception:
         pass
@@ -339,7 +339,7 @@ def fetch_crossref(code):
             year = str(parts[0][0])
         author = ", ".join(authors) if authors else "-"
         if publisher or year:
-            author = f"{author} Â· {publisher} {year}".strip(" Â·")
+            author = f"{author} · {publisher} {year}".strip(" ·")
         return make_result(title, author, "crossref", "Buch", 78)
     except Exception:
         return None
@@ -444,7 +444,7 @@ def fetch_upcitemdb(code):
         if not title or is_generic_title(title):
             return None
         item_type = detect_item_type(c, title, f"{brand} {category} {description}", "upcitemdb")
-        author = " Â· ".join([x for x in [brand, category] if x]) or description[:160] or "-"
+        author = " · ".join([x for x in [brand, category] if x]) or description[:160] or "-"
         if "dvd & blu-ray players" in author.lower():
             author = brand or "-"
         return make_result(title, author, "upcitemdb", item_type, 76)
@@ -475,7 +475,7 @@ def fetch_musicbrainz(code):
         item_type = "Schallplatte" if any("vinyl" in f.lower() for f in formats) else "CD"
         author = ", ".join(artists) if artists else "-"
         if formats:
-            author = f"{author} Â· {', '.join(formats)}".strip(" Â·")
+            author = f"{author} · {', '.join(formats)}".strip(" ·")
         return make_result(title, author, "musicbrainz", item_type, 86)
     except Exception:
         return None
@@ -551,7 +551,7 @@ def fetch_web_search_product(code):
             f'"{c}" livre',
             f'"{c}" libro',
             f'"{c}" kitap',
-            f'"{c}" ÐºÐ½Ð¸Ð³Ð°',
+            f'"{c}" книга',
         ]
     else:
         queries = [
@@ -817,13 +817,13 @@ def build_lookup_response(code):
 @app.route("/")
 def home():
     return jsonify({
-        "status": "Books2Cash API lÃ¤uft",
+        "status": "Books2Cash API läuft",
         "version": "media_lookup_backend_v9_international",
         "hint": "Nutze /isbn/<code> oder /lookup/<code>",
         "features": [
             "internationale ISBN-Suche", "DVD/Blu-ray/CD/Vinyl/Games via EAN",
             "UPCitemdb", "MusicBrainz", "Wikidata", "DuckDuckGo-Web-Fallback",
-            "strikte PreisÃ¼bernahme nur wenn Code auf Quellseite vorkommt",
+            "strikte Preisübernahme nur wenn Code auf Quellseite vorkommt",
         ],
     })
 
