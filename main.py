@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v18_media_cleanup_verified"
+VERSION = "books2cash_backend_v19_dvd_cache_and_resolver_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/18.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/19.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,22 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "7321921144790": {
+        "title": "Glimmer Man",
+        "details": "Regie: John Gray · Steven Seagal / Keenen Ivory Wayans · DVD · USA 1996 · FSK 16 · 88 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
+    "4260110580984": {
+        "title": "Zombie & Vampire Box Collection",
+        "details": "DVD-Box · Horror · 2 DVDs · FSK 18 · ca. 521 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "9006472027690": {
         "title": "Everyday Rebellion",
         "details": "DVD · Dokumentarfilm · Österreich/Schweiz/Deutschland 2013",
@@ -583,7 +599,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/18.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/19.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1138,7 +1154,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V18 bereinigt UPC-/Shop-Rohtitel stärker, entfernt Import-/Condition-/Kategorie-Müll und priorisiert saubere Medienfelder."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V19 ergänzt verifizierte DVD-Cache-Treffer und nutzt weiter bereinigte Medien-/UPC-Resolver."})
 
 
 @app.route("/health")
