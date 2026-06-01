@@ -38,29 +38,22 @@ KNOWN_ITEMS = {
         "confidence": 99,
     },
     "4042564128512": {
-        "title": "Der Duft der grünen Papaya",
-        "author": "Regie: Tran Anh Hung · DVD · Frankreich 1993 · FSK 6 · ca. 100 Minuten",
+        "title": "Der Duft der grÃ¼nen Papaya",
+        "author": "Regie: Tran Anh Hung Â· DVD Â· Frankreich 1993 Â· FSK 6 Â· ca. 100 Minuten",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
     },
     "7321925014167": {
-        "title": "Sex and the City – Der Film",
-        "author": "Regie: Michael Patrick King · DVD · FSK 12 · 139 Minuten",
-        "item_type": "DVD",
-        "source": "known_dvd_cache",
-        "confidence": 99,
-    },
-    "5050582931372": {
-        "title": "Alles eine Frage der Zeit",
-        "author": "Regie: Richard Curtis · DVD · Universal Pictures · 2013 · FSK 0 · ca. 118 Minuten",
+        "title": "Sex and the City â€“ Der Film",
+        "author": "Regie: Michael Patrick King Â· DVD Â· FSK 12 Â· 139 Minuten",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
     },
     "9782266353267": {
         "title": "Les Assassins de l'aube",
-        "author": "Michel Bussi · Pocket · Französisches Buch · ISBN-10: 2266353268",
+        "author": "Michel Bussi Â· Pocket Â· FranzÃ¶sisches Buch Â· ISBN-10: 2266353268",
         "item_type": "Buch",
         "source": "known_book_cache",
         "confidence": 99,
@@ -96,7 +89,7 @@ def isbn13_to_isbn10(isbn13):
 def normalize_price(value):
     if value is None:
         return None
-    text = str(value).replace("\xa0", " ").replace("EUR", "€").replace("Euro", "€").strip()
+    text = str(value).replace("\xa0", " ").replace("EUR", "â‚¬").replace("Euro", "â‚¬").strip()
     if not text or text.lower() in {"none", "null", "-", "nan"}:
         return None
     match = re.search(r"(\d{1,5}(?:[.,]\d{1,2}))", text)
@@ -152,8 +145,8 @@ def extract_prices(text):
         return []
     text = text.replace("\xa0", " ")
     patterns = [
-        r"(\d{1,5}[,.]\d{2})\s*€",
-        r"€\s*(\d{1,5}[,.]\d{2})",
+        r"(\d{1,5}[,.]\d{2})\s*â‚¬",
+        r"â‚¬\s*(\d{1,5}[,.]\d{2})",
         r"(\d{1,5}[,.]\d{2})\s*EUR",
     ]
     prices = []
@@ -216,29 +209,6 @@ def cleanup_title(title):
     return title
 
 
-def looks_like_person_list_not_title(title):
-    t = cleanup_title(title)
-    tl = t.lower()
-    if not t:
-        return True
-    if t.count(",") >= 2 and re.search(r"\b(dv|dvd|blu-ray|bluray)\b\.?$", tl):
-        return True
-    if t.count(",") >= 2 and not any(x in tl for x in [" der ", " die ", " das ", " the ", " and ", " und ", ":", "-"]):
-        return True
-    return False
-
-
-def is_bad_product_category(text):
-    t = (text or "").lower()
-    bad = [
-        "video players & recorders",
-        "dvd & blu-ray players",
-        "electronics > video",
-        "player & recorder",
-    ]
-    return any(x in t for x in bad)
-
-
 def detect_item_type(code, title="", author="", source=""):
     text = f"{code} {title} {author} {source}".lower()
     if is_isbn(code):
@@ -259,7 +229,7 @@ def detect_item_type(code, title="", author="", source=""):
         return "Brettspiel"
     if any(x in text for x in ["comic", "manga", "graphic novel"]):
         return "Comic"
-    if any(x in text for x in ["pokemon", "pokémon", "trading card", "sammelkarte", "funko", "lego", "collectible"]):
+    if any(x in text for x in ["pokemon", "pokÃ©mon", "trading card", "sammelkarte", "funko", "lego", "collectible"]):
         return "Sammelobjekt"
     return "Sonstiges"
 
@@ -306,7 +276,7 @@ def fetch_google_books(code):
                     published = info.get("publishedDate", "") or ""
                     author = ", ".join(authors).strip() if authors else "-"
                     if publisher or published:
-                        author = f"{author} · {publisher} {published}".strip(" ·")
+                        author = f"{author} Â· {publisher} {published}".strip(" Â·")
                     result = make_result(title, author, f"google_books_{country}", "Buch", 88)
                     if result:
                         best = result
@@ -336,7 +306,7 @@ def fetch_openlibrary(code):
             publishers = [p.get("name", "") for p in item.get("publishers", []) if p.get("name")]
             author = ", ".join(authors) if authors else "-"
             if publishers or item.get("publish_date"):
-                author = f"{author} · {', '.join(publishers)} {item.get('publish_date', '')}".strip(" ·")
+                author = f"{author} Â· {', '.join(publishers)} {item.get('publish_date', '')}".strip(" Â·")
             return make_result(title, author, "openlibrary", "Buch", 84)
     except Exception:
         pass
@@ -369,7 +339,7 @@ def fetch_crossref(code):
             year = str(parts[0][0])
         author = ", ".join(authors) if authors else "-"
         if publisher or year:
-            author = f"{author} · {publisher} {year}".strip(" ·")
+            author = f"{author} Â· {publisher} {year}".strip(" Â·")
         return make_result(title, author, "crossref", "Buch", 78)
     except Exception:
         return None
@@ -467,29 +437,17 @@ def fetch_upcitemdb(code):
         if not items:
             return None
         item = items[0]
-        raw_title = item.get("title", "")
-        title = cleanup_title(raw_title)
+        title = cleanup_title(item.get("title", ""))
         brand = item.get("brand", "") or ""
         category = item.get("category", "") or ""
         description = item.get("description", "") or ""
-        searchable = f"{brand} {category} {description} {raw_title}"
         if not title or is_generic_title(title):
             return None
-        if looks_like_person_list_not_title(title):
-            return None
-        item_type = detect_item_type(c, title, searchable, "upcitemdb")
-        author_parts = []
-        if brand and not is_bad_product_category(brand):
-            author_parts.append(brand)
-        if category and not is_bad_product_category(category):
-            author_parts.append(category)
-        if description and not looks_like_person_list_not_title(description) and not is_bad_product_category(description):
-            author_parts.append(description[:160])
-        author = " · ".join(author_parts) or "-"
-        confidence = 76
-        if item_type in ["DVD", "Blu-ray", "CD", "Schallplatte", "Konsolenspiel"]:
-            confidence = 72
-        return make_result(title, author, "upcitemdb", item_type, confidence)
+        item_type = detect_item_type(c, title, f"{brand} {category} {description}", "upcitemdb")
+        author = " Â· ".join([x for x in [brand, category] if x]) or description[:160] or "-"
+        if "dvd & blu-ray players" in author.lower():
+            author = brand or "-"
+        return make_result(title, author, "upcitemdb", item_type, 76)
     except Exception:
         return None
 
@@ -517,7 +475,7 @@ def fetch_musicbrainz(code):
         item_type = "Schallplatte" if any("vinyl" in f.lower() for f in formats) else "CD"
         author = ", ".join(artists) if artists else "-"
         if formats:
-            author = f"{author} · {', '.join(formats)}".strip(" ·")
+            author = f"{author} Â· {', '.join(formats)}".strip(" Â·")
         return make_result(title, author, "musicbrainz", item_type, 86)
     except Exception:
         return None
@@ -568,19 +526,14 @@ def extract_search_results_from_duckduckgo(html):
 
 def clean_search_title(raw_title, code):
     title = cleanup_title(raw_title)
-    title = re.sub(re.escape(clean_code(code)), "", title, flags=re.I).strip(" -|:;,. ")
+    title = re.sub(re.escape(clean_code(code)), "", title, flags=re.I).strip(" -|:;,.")
     remove_patterns = [
         r"\s*\|\s*.*$",
-        r"\s+-\s+(DVD|Blu-ray|CD|Buch|Book|Amazon|eBay|medimops|reBuy|Booklooker|Thalia|MediaMarkt|Saturn|jpc|CeDe).*$",
+        r"\s+-\s+(DVD|Blu-ray|CD|Buch|Book|Amazon|eBay|medimops|reBuy|Booklooker).*$",
         r"\s+online kaufen.*$",
         r"\s+gebraucht kaufen.*$",
-        r"\s+als\s+(DVD|Blu-ray|CD)\s+kaufen.*$",
         r"\s+\(DVD\).*$",
         r"\s+\[DVD\].*$",
-        r"\s+\(Blu-ray\).*$",
-        r"\s+\[Blu-ray\].*$",
-        r"^DVD\s+",
-        r"^Blu-ray\s+",
     ]
     for p in remove_patterns:
         title = re.sub(p, "", title, flags=re.I).strip(" -|:;,")
@@ -591,52 +544,40 @@ def fetch_web_search_product(code):
     c = clean_code(code)
     if not c:
         return None
+    queries = []
     if is_isbn(c):
         queries = [
-            f'"{c}" ISBN book title author',
-            f'"{c}" livre auteur titre',
-            f'"{c}" libro autore titolo',
-            f'"{c}" kitap yazar',
-            f'"{c}" книга автор',
+            f'"{c}" ISBN book',
+            f'"{c}" livre',
+            f'"{c}" libro',
+            f'"{c}" kitap',
+            f'"{c}" ÐºÐ½Ð¸Ð³Ð°',
         ]
     else:
         queries = [
-            f'"{c}" DVD Titel Regie Darsteller',
-            f'"{c}" "EAN" DVD Film',
-            f'"{c}" medimops reBuy Booklooker DVD',
-            f'"{c}" jpc cede thalia DVD',
-            f'"{c}" PS5 PS4 Xbox Nintendo Switch game',
+            f'"{c}" DVD OR Blu-ray film',
+            f'"{c}" reBuy medimops Booklooker',
+            f'"{c}" PS5 OR PS4 OR Xbox OR Nintendo Switch game',
             f'"{c}" CD vinyl Discogs MusicBrainz',
         ]
     candidates = []
-    preferred_domains = ["medimops", "rebuy", "booklooker", "jpc", "cede", "mediamarkt", "saturn", "thalia", "amazon", "imusic"]
     for q in queries:
         url = "https://duckduckgo.com/html/?q=" + quote(q)
         result = fetch(url, timeout=10)
         if not result["ok"]:
             continue
         for row in extract_search_results_from_duckduckgo(result["text"]):
-            raw = row.get("title", "")
-            title = clean_search_title(raw, c)
-            if not title or is_generic_title(title) or looks_like_person_list_not_title(title):
+            title = clean_search_title(row["title"], c)
+            if not title or is_generic_title(title):
                 continue
-            source_text = f"duckduckgo {q} {row.get('url', '')} {row.get('snippet', '')} {raw}"
+            source_text = f"duckduckgo {q} {row.get('url', '')} {row.get('snippet', '')}"
             item_type = detect_item_type(c, title, row.get("snippet", ""), source_text)
-            score = 72
-            url_text = row.get("url", "").lower()
-            if any(d in url_text for d in preferred_domains):
-                score += 10
-            if c in raw or c in row.get("snippet", ""):
+            score = 62
+            if c in row["title"] or c in row.get("snippet", ""):
                 score += 8
             if item_type != "Sonstiges":
-                score += 10
-            if is_isbn(c) and item_type == "Buch":
                 score += 8
-            if not is_isbn(c) and item_type in ["DVD", "Blu-ray", "CD", "Schallplatte", "Konsolenspiel"]:
-                score += 10
-            candidate = make_result(title, row.get("snippet", "-") or "-", f"web_search_{item_type.lower()}", item_type, score)
-            if candidate:
-                candidates.append(candidate)
+            candidates.append(make_result(title, row.get("snippet", "-") or "-", f"web_search_{item_type.lower()}", item_type, score))
     candidates = [x for x in candidates if x]
     if not candidates:
         return None
@@ -648,26 +589,14 @@ def get_media_info(code):
     c = clean_code(code)
     if c in KNOWN_ITEMS:
         return KNOWN_ITEMS[c]
-
-    candidates = []
-
     if is_isbn(c):
-        for fn in [fetch_google_books, fetch_openlibrary, fetch_bnf, fetch_crossref, fetch_dnb, fetch_web_search_product]:
-            result = fn(c)
-            if result:
-                candidates.append(result)
-    else:
-        for fn in [fetch_web_search_product, fetch_musicbrainz, fetch_wikidata_gtin, fetch_upcitemdb]:
-            result = fn(c)
-            if result:
-                candidates.append(result)
-
-    candidates = [x for x in candidates if x and x.get("title") and not is_generic_title(x.get("title"))]
-    candidates = [x for x in candidates if not looks_like_person_list_not_title(x.get("title", ""))]
-    if candidates:
-        candidates.sort(key=lambda x: x.get("confidence", 0), reverse=True)
-        return candidates[0]
-
+        book = get_book_info(c)
+        if book:
+            return book
+    for fn in [fetch_upcitemdb, fetch_musicbrainz, fetch_wikidata_gtin, fetch_web_search_product]:
+        result = fn(c)
+        if result:
+            return result
     if is_isbn(c):
         return {"title": "Nicht gefunden", "author": "-", "source": "none", "item_type": "Buch", "confidence": 0}
     return {"title": "Nicht gefunden", "author": "-", "source": "none", "item_type": "Sonstiges", "confidence": 0}
@@ -888,13 +817,13 @@ def build_lookup_response(code):
 @app.route("/")
 def home():
     return jsonify({
-        "status": "Books2Cash API läuft",
-        "version": "media_lookup_backend_v10_better_dvd_titles",
+        "status": "Books2Cash API lÃ¤uft",
+        "version": "media_lookup_backend_v9_international",
         "hint": "Nutze /isbn/<code> oder /lookup/<code>",
         "features": [
             "internationale ISBN-Suche", "DVD/Blu-ray/CD/Vinyl/Games via EAN",
             "UPCitemdb", "MusicBrainz", "Wikidata", "DuckDuckGo-Web-Fallback",
-            "strikte Preisübernahme nur wenn Code auf Quellseite vorkommt",
+            "strikte PreisÃ¼bernahme nur wenn Code auf Quellseite vorkommt",
         ],
     })
 
