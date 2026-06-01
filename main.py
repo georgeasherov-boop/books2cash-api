@@ -6,22 +6,22 @@ import sqlite3
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from statistics import median
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v13_professional_free_verified"
+VERSION = "books2cash_backend_v14_professional_page_resolver_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
-LOOKUP_TIMEOUT_SECONDS = 9
+LOOKUP_TIMEOUT_SECONDS = 12
 PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/13.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/14.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -65,6 +65,25 @@ BAD_TITLE_PARTS = [
     "login",
     "products search",
     "shop",
+    "privacy policy",
+    "datenschutz",
+    "cookie",
+]
+
+TRUSTED_PRODUCT_DOMAINS = [
+    "medimops.de",
+    "rebuy.de",
+    "booklooker.de",
+    "jpc.de",
+    "worldofbooks.com",
+    "abebooks.",
+    "fnac.",
+    "lisez.com",
+    "thalia.",
+    "buecher.de",
+    "bol.com",
+    "discogs.com",
+    "musicbrainz.org",
 ]
 
 KNOWN_ITEMS = {
@@ -214,15 +233,20 @@ def cleanup_title(title):
         r"\s*\|\s*(DVD|Blu-ray|Bluray|CD)\s*\|\s*Condition\s+.*$",
         r"\s*\|\s*Condition\s+.*$",
         r"\s*\|\s*(DVD|Blu-ray|Bluray|CD)\s*$",
-        r"\s+-\s+(Amazon|eBay|medimops|reBuy|Booklooker|momox|Fnac|AbeBooks|Google|YouTube).*$",
-        r"\s+\|\s+(Amazon|eBay|medimops|reBuy|Booklooker|momox|Fnac|AbeBooks|Google|YouTube).*$",
+        r"\s+-\s+(Amazon|eBay|medimops|reBuy|Booklooker|momox|Fnac|AbeBooks|Google|YouTube|jpc).*$",
+        r"\s+\|\s+(Amazon|eBay|medimops|reBuy|Booklooker|momox|Fnac|AbeBooks|Google|YouTube|jpc).*$",
         r"\s+(online kaufen|gebraucht kaufen).*$",
         r"\s+\[(DVD|Blu-ray|CD)\].*$",
         r"\s+\((DVD|Blu-ray|CD)\).*$",
     ]
 
     for pattern in patterns:
-        text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" -|:,;")
+        text = re.sub(
+            pattern,
+            "",
+            text,
+            flags=re.IGNORECASE,
+        ).strip(" -|:,;")
 
     return text.strip(" -|:,.")
 
@@ -243,14 +267,18 @@ def is_bad_title(title):
     ):
         return True
 
-    if len(t) > 160:
+    if len(t) > 170:
         return True
 
     return False
 
 
 def extract_by_creator(raw_title):
-    match = re.search(r"\bBy\s+([^|]+)", str(raw_title or ""), flags=re.IGNORECASE)
+    match = re.search(
+        r"\bBy\s+([^|]+)",
+        str(raw_title or ""),
+        flags=re.IGNORECASE,
+    )
 
     if not match:
         return ""
@@ -282,6 +310,7 @@ def detect_item_type(code, title="", details="", source=""):
             "warner",
             "universal pictures",
             "paramount",
+            "sony pictures",
         ]
     ):
         return "DVD"
@@ -501,7 +530,10 @@ def cache_get(code):
 
     try:
         conn = db_connect()
-        row = conn.execute("SELECT * FROM media_cache WHERE code = ?", (c,)).fetchone()
+        row = conn.execute(
+            "SELECT * FROM media_cache WHERE code = ?",
+            (c,),
+        ).fetchone()
         conn.close()
 
         if not row:
@@ -628,7 +660,11 @@ def fetch_google_books(code):
                     f"?q={quote(query)}&country={country}&maxResults=5"
                 )
 
-                data = requests.get(url, headers=JSON_HEADERS, timeout=6).json()
+                data = requests.get(
+                    url,
+                    headers=JSON_HEADERS,
+                    timeout=6,
+                ).json()
 
                 for item in data.get("items", []) or []:
                     info = item.get("volumeInfo", {}) or {}
@@ -685,7 +721,12 @@ def fetch_openlibrary(code):
                 f"?bibkeys=ISBN:{quote(code_item)}&format=json&jscmd=data"
             )
 
-            data = requests.get(url, headers=JSON_HEADERS, timeout=6).json()
+            data = requests.get(
+                url,
+                headers=JSON_HEADERS,
+                timeout=6,
+            ).json()
+
             item = data.get(f"ISBN:{code_item}")
 
             if not item:
@@ -739,7 +780,12 @@ def fetch_crossref(code):
         c = clean_code(code)
         url = f"https://api.crossref.org/works?filter=isbn:{quote(c)}&rows=5"
 
-        data = requests.get(url, headers=JSON_HEADERS, timeout=6).json()
+        data = requests.get(
+            url,
+            headers=JSON_HEADERS,
+            timeout=6,
+        ).json()
+
         candidates = []
 
         for item in data.get("message", {}).get("items", []) or []:
@@ -804,7 +850,11 @@ def fetch_dnb(code):
             f"&query=isbn={quote(c)}&recordSchema=MARC21-xml"
         )
 
-        response = requests.get(url, headers=HEADERS, timeout=6)
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=6,
+        )
 
         if response.status_code != 200:
             return []
@@ -876,7 +926,11 @@ def fetch_bnf(code):
             f"&query=bib.isbn%20all%20%22{quote(c)}%22&maximumRecords=5"
         )
 
-        response = requests.get(url, headers=HEADERS, timeout=7)
+        response = requests.get(
+            url,
+            headers=HEADERS,
+            timeout=7,
+        )
 
         if response.status_code != 200:
             return []
@@ -897,7 +951,9 @@ def fetch_bnf(code):
             ) and tag.get_text(strip=True):
                 creator = tag.get_text(" ", strip=True)
 
-        details = " · ".join(x for x in [creator, "FR", "Buch"] if x)
+        details = " · ".join(
+            x for x in [creator, "FR", "Buch"] if x
+        )
 
         result = make_result(
             title,
@@ -930,11 +986,16 @@ def fetch_musicbrainz(code):
         )
 
         headers = {
-            "User-Agent": "Books2Cash/13.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/14.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
 
-        data = requests.get(url, headers=headers, timeout=8).json()
+        data = requests.get(
+            url,
+            headers=headers,
+            timeout=8,
+        ).json()
+
         candidates = []
 
         for release in data.get("releases", []) or []:
@@ -961,7 +1022,9 @@ def fetch_musicbrainz(code):
             creator = ", ".join(artists)
             medium = ", ".join(formats) if formats else item_type
 
-            details = " · ".join(x for x in [creator, medium] if x)
+            details = " · ".join(
+                x for x in [creator, medium] if x
+            )
 
             result = make_result(
                 title,
@@ -990,7 +1053,7 @@ def fetch_wikidata_gtin(code):
         return []
 
     try:
-        sparql = f"""
+        sparql = f'''
         SELECT ?item ?itemLabel ?itemDescription WHERE {{
           VALUES ?gtin {{ "{c}" }}
           ?item wdt:P3962 ?gtin.
@@ -999,7 +1062,7 @@ def fetch_wikidata_gtin(code):
           }}
         }}
         LIMIT 5
-        """
+        '''
 
         url = "https://query.wikidata.org/sparql?format=json&query=" + quote(sparql)
 
@@ -1047,7 +1110,12 @@ def fetch_upcitemdb(code):
     try:
         url = f"https://api.upcitemdb.com/prod/trial/lookup?upc={quote(c)}"
 
-        data = requests.get(url, headers=JSON_HEADERS, timeout=8).json()
+        data = requests.get(
+            url,
+            headers=JSON_HEADERS,
+            timeout=8,
+        ).json()
+
         candidates = []
 
         for item in data.get("items", []) or []:
@@ -1112,31 +1180,283 @@ def fetch_upcitemdb(code):
         return []
 
 
-def extract_duckduckgo_results(html):
+# -----------------------------
+# Trusted product page resolver
+# -----------------------------
+def decode_duckduckgo_url(url):
+    if not url:
+        return ""
+
+    if url.startswith("//"):
+        url = "https:" + url
+
+    if url.startswith("/"):
+        url = "https://duckduckgo.com" + url
+
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+
+    if "uddg" in qs and qs["uddg"]:
+        return unquote(qs["uddg"][0])
+
+    return url
+
+
+def is_trusted_product_url(url):
+    lower = (url or "").lower()
+    return any(domain in lower for domain in TRUSTED_PRODUCT_DOMAINS)
+
+
+def extract_duckduckgo_links(html):
     soup = BeautifulSoup(html or "", "html.parser")
-    rows = []
+    urls = []
 
     for link in soup.select("a.result__a"):
-        title = cleanup_title(link.get_text(" ", strip=True))
-        href = link.get("href", "")
+        href = decode_duckduckgo_url(link.get("href", ""))
 
-        if title and not is_bad_title(title):
-            rows.append(
-                {
-                    "title": title,
-                    "url": href,
-                    "snippet": "",
-                }
+        if href and is_trusted_product_url(href):
+            urls.append(href)
+
+    for link in soup.find_all("a"):
+        href = decode_duckduckgo_url(link.get("href", ""))
+
+        if href and is_trusted_product_url(href):
+            urls.append(href)
+
+    unique = []
+
+    for url in urls:
+        if url not in unique:
+            unique.append(url)
+
+    return unique[:10]
+
+
+def extract_meta_title(soup):
+    selectors = [
+        ("meta", {"property": "og:title"}),
+        ("meta", {"name": "og:title"}),
+        ("meta", {"name": "twitter:title"}),
+        ("meta", {"property": "twitter:title"}),
+    ]
+
+    for name, attrs in selectors:
+        tag = soup.find(name, attrs=attrs)
+
+        if tag and tag.get("content"):
+            return tag.get("content", "")
+
+    h1 = soup.find("h1")
+
+    if h1 and h1.get_text(strip=True):
+        return h1.get_text(" ", strip=True)
+
+    if soup.title and soup.title.string:
+        return soup.title.string
+
+    return ""
+
+
+def parse_product_title_from_page(raw_title, url, page_text):
+    raw = cleanup_title(raw_title)
+    host = urlparse(url).netloc.lower()
+    creator = ""
+    medium = detect_item_type("", raw, page_text[:500], host)
+
+    if any(domain in host for domain in ["medimops", "rebuy"]):
+        parts = [
+            cleanup_title(part)
+            for part in re.split(r"\s+-\s+", raw)
+            if cleanup_title(part)
+        ]
+
+        if len(parts) >= 3 and parts[-1].lower() in ["dvd", "blu-ray", "bluray", "cd"]:
+            medium_text = parts[-1]
+            creator = parts[0]
+            title = " - ".join(parts[1:-1])
+            medium = (
+                "Blu-ray"
+                if "blu" in medium_text.lower()
+                else "CD"
+                if medium_text.lower() == "cd"
+                else "DVD"
             )
+            return cleanup_title(title), creator, medium
 
-    return rows[:10]
+        if len(parts) >= 2 and parts[-1].lower() in ["dvd", "blu-ray", "bluray", "cd"]:
+            title = " - ".join(parts[:-1])
+            medium_text = parts[-1]
+            medium = (
+                "Blu-ray"
+                if "blu" in medium_text.lower()
+                else "CD"
+                if medium_text.lower() == "cd"
+                else "DVD"
+            )
+            return cleanup_title(title), creator, medium
+
+    title = raw
+    title = re.sub(
+        r"\s+auf\s+(DVD|Blu-ray|CD).*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = re.sub(
+        r"\s*\((DVD|Blu-ray|Blu Ray|CD)\).*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = re.sub(
+        r"\s+-\s+(DVD|Blu-ray|Blu Ray|CD).*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return cleanup_title(title), creator, medium
 
 
-def fetch_duckduckgo_candidates(code):
+def fetch_product_page_candidate_from_url(code, url):
+    c = clean_code(code)
+    result = fetch(url, timeout=10)
+
+    if not result["ok"]:
+        return None
+
+    html = result["text"]
+    text = html_to_text(html)
+    merged_digits = re.sub(r"[^0-9Xx]", "", html + " " + text).upper()
+
+    if c not in merged_digits:
+        return None
+
+    soup = BeautifulSoup(html, "html.parser")
+    raw_title = extract_meta_title(soup)
+
+    title, creator, medium = parse_product_title_from_page(
+        raw_title,
+        result["url"],
+        text,
+    )
+
+    if not title or is_bad_title(title):
+        return None
+
+    item_type = detect_item_type(
+        c,
+        title,
+        f"{creator} {medium} {text[:1000]}",
+        result["url"],
+    )
+
+    if medium and item_type == "Sonstiges":
+        item_type = medium
+
+    details_parts = []
+
+    if creator:
+        if item_type in ["DVD", "Blu-ray"]:
+            details_parts.append(f"Regie/Info: {creator}")
+        else:
+            details_parts.append(creator)
+
+    if medium:
+        details_parts.append(medium)
+
+    if item_type and item_type not in details_parts and item_type != medium:
+        details_parts.append(item_type)
+
+    details = " · ".join(details_parts) if details_parts else item_type
+
+    return make_result(
+        title,
+        details,
+        "trusted_product_page",
+        item_type,
+        94,
+        True,
+        creator=creator,
+        medium=medium if medium else item_type,
+    )
+
+
+def fetch_trusted_product_pages(code):
     c = clean_code(code)
 
     if not c:
         return []
+
+    if is_isbn(c):
+        queries = [
+            f'"{c}" medimops OR rebuy OR booklooker OR abebooks OR fnac',
+            f'"{c}" book title author',
+        ]
+    else:
+        queries = [
+            f'"{c}" medimops OR rebuy OR booklooker',
+            f'"{c}" DVD OR Blu-ray film',
+            f'"{c}" jpc DVD',
+            f'"{c}" world of books',
+        ]
+
+    urls = []
+
+    for query in queries:
+        result = fetch(
+            "https://duckduckgo.com/html/?q=" + quote(query),
+            timeout=10,
+        )
+
+        if result["ok"]:
+            urls.extend(extract_duckduckgo_links(result["text"]))
+
+    unique_urls = []
+
+    for url in urls:
+        if url not in unique_urls:
+            unique_urls.append(url)
+
+    candidates = []
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [
+            executor.submit(fetch_product_page_candidate_from_url, c, url)
+            for url in unique_urls[:8]
+        ]
+
+        try:
+            for future in as_completed(futures, timeout=10):
+                try:
+                    item = future.result()
+
+                    if item:
+                        candidates.append(item)
+
+                except Exception:
+                    pass
+
+        except Exception:
+            pass
+
+    return candidates
+
+
+def fetch_duckduckgo_weak_candidates(code):
+    c = clean_code(code)
+
+    if not c:
+        return []
+
+    queries = [
+        f'"{c}" DVD film title',
+        f'"{c}" Blu-ray film',
+        f'"{c}" CD vinyl',
+        f'"{c}" PS5 PS4 Xbox Nintendo Switch',
+    ]
 
     if is_isbn(c):
         queries = [
@@ -1145,47 +1465,42 @@ def fetch_duckduckgo_candidates(code):
             f'"{c}" livre auteur',
         ]
 
-        isbn10 = isbn13_to_isbn10(c)
-
-        if isbn10:
-            queries.append(f'"{isbn10}" ISBN')
-
-    else:
-        queries = [
-            f'"{c}" DVD film title',
-            f'"{c}" Blu-ray film',
-            f'"{c}" medimops rebuy booklooker',
-            f'"{c}" CD vinyl',
-            f'"{c}" PS5 PS4 Xbox Nintendo Switch',
-        ]
-
     candidates = []
 
     for query in queries:
-        result = fetch("https://duckduckgo.com/html/?q=" + quote(query), timeout=10)
+        result = fetch(
+            "https://duckduckgo.com/html/?q=" + quote(query),
+            timeout=10,
+        )
 
         if not result["ok"]:
             continue
 
-        for row in extract_duckduckgo_results(result["text"]):
-            title = cleanup_title(row["title"])
+        soup = BeautifulSoup(result["text"], "html.parser")
 
-            item_type = detect_item_type(c, title, row.get("url", ""), query)
-            details = item_type if item_type != "Sonstiges" else "-"
+        for link in soup.select("a.result__a")[:6]:
+            title = cleanup_title(link.get_text(" ", strip=True))
 
-            confidence = 45 + (10 if item_type != "Sonstiges" else 0)
+            if is_bad_title(title):
+                continue
+
+            item_type = detect_item_type(
+                c,
+                title,
+                link.get("href", ""),
+                query,
+            )
 
             candidate = make_result(
                 title,
-                details,
+                item_type if item_type != "Sonstiges" else "-",
                 "duckduckgo_weak_candidate",
                 item_type,
-                confidence,
+                45 + (10 if item_type != "Sonstiges" else 0),
                 False,
             )
 
             if candidate:
-                candidate["url"] = row.get("url", "")
                 candidates.append(candidate)
 
     return candidates
@@ -1226,7 +1541,11 @@ def rank_candidates(candidates):
     ranked = []
 
     for key, items in grouped.items():
-        best = max(items, key=lambda item: int(item.get("confidence", 0)))
+        best = max(
+            items,
+            key=lambda item: int(item.get("confidence", 0)),
+        )
+
         sources = {item.get("source", "") for item in items}
         verified_count = sum(1 for item in items if item.get("verified"))
 
@@ -1254,7 +1573,11 @@ def rank_candidates(candidates):
 
         ranked.append(best)
 
-    ranked.sort(key=lambda item: int(item.get("confidence", 0)), reverse=True)
+    ranked.sort(
+        key=lambda item: int(item.get("confidence", 0)),
+        reverse=True,
+    )
+
     return ranked
 
 
@@ -1270,14 +1593,12 @@ def collect_candidates(code):
         known = dict(KNOWN_ITEMS[c])
         known.setdefault("details", known.get("author", "-"))
         known.setdefault("author", known.get("details", "-"))
-        candidates.append(known)
-        return candidates
+        return [known]
 
     cached = cache_get(c)
 
     if cached:
-        candidates.append(cached)
-        return candidates
+        return [cached]
 
     if is_isbn(c):
         sources = [
@@ -1286,26 +1607,31 @@ def collect_candidates(code):
             fetch_bnf,
             fetch_crossref,
             fetch_dnb,
+            fetch_trusted_product_pages,
         ]
     else:
         sources = [
             fetch_musicbrainz,
             fetch_wikidata_gtin,
+            fetch_trusted_product_pages,
             fetch_upcitemdb,
-            fetch_duckduckgo_candidates,
+            fetch_duckduckgo_weak_candidates,
         ]
 
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        futures = [executor.submit(source, c) for source in sources]
-        deadline = time.time() + LOOKUP_TIMEOUT_SECONDS
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        futures = [
+            executor.submit(source, c)
+            for source in sources
+        ]
 
         try:
-            for future in as_completed(futures, timeout=LOOKUP_TIMEOUT_SECONDS):
-                if time.time() > deadline:
-                    break
-
+            for future in as_completed(
+                futures,
+                timeout=LOOKUP_TIMEOUT_SECONDS,
+            ):
                 try:
                     candidates.extend(future.result() or [])
+
                 except Exception:
                     pass
 
@@ -1405,7 +1731,11 @@ def extract_prices(text):
     ]
 
     for pattern in patterns:
-        for match in re.finditer(pattern, text.replace("\xa0", " "), flags=re.IGNORECASE):
+        for match in re.finditer(
+            pattern,
+            text.replace("\xa0", " "),
+            flags=re.IGNORECASE,
+        ):
             number = normalize_price(match.group(1))
 
             if number is not None:
@@ -1509,7 +1839,11 @@ def get_price_source(name, code):
     if not all_prices:
         return None, trace
 
-    if name.startswith("sell_ebay") or name.startswith("sell_willhaben") or name.startswith("sell_vinted"):
+    if (
+        name.startswith("sell_ebay")
+        or name.startswith("sell_willhaben")
+        or name.startswith("sell_vinted")
+    ):
         value = median(all_prices)
     else:
         value = min(all_prices)
@@ -1529,7 +1863,10 @@ def get_prices(code):
         }
 
         try:
-            for future in as_completed(futures, timeout=PRICE_TIMEOUT_SECONDS):
+            for future in as_completed(
+                futures,
+                timeout=PRICE_TIMEOUT_SECONDS,
+            ):
                 name = futures[future]
 
                 try:
@@ -1569,8 +1906,17 @@ def get_prices(code):
         results.get("sell_vinted"),
     ]
 
-    buy_clean = [value for value in buy_values if value is not None]
-    sell_clean = [value for value in sell_values if value is not None]
+    buy_clean = [
+        value
+        for value in buy_values
+        if value is not None
+    ]
+
+    sell_clean = [
+        value
+        for value in sell_values
+        if value is not None
+    ]
 
     return {
         "ok": True,
@@ -1610,7 +1956,6 @@ def get_prices(code):
 def combined_response(code):
     lookup = lookup_product(code)
     prices = get_prices(code)
-
     response = dict(lookup)
 
     response.update(
@@ -1645,7 +1990,7 @@ def home():
                 "/learn/<code>",
                 "/cache/<code>",
             ],
-            "principle": "Produktdaten und Preise getrennt; schwache Quellen werden nicht blind akzeptiert.",
+            "principle": "Produktseiten werden nur akzeptiert, wenn der Barcode auf der Seite vorkommt.",
         }
     )
 
@@ -1701,11 +2046,11 @@ def candidates_route(code):
 @app.route("/learn/<code>", methods=["GET", "POST"])
 def learn_route(code):
     c = clean_code(code)
-
-    if request.method == "POST":
-        data = request.get_json(silent=True) or {}
-    else:
-        data = request.args.to_dict()
+    data = (
+        request.get_json(silent=True) or {}
+        if request.method == "POST"
+        else request.args.to_dict()
+    )
 
     title = (data.get("title") or "").strip()
     details = (
@@ -1800,7 +2145,10 @@ def cache_all_route():
         ).fetchall()
         conn.close()
 
-        items = [dict(row) for row in rows]
+        items = [
+            dict(row)
+            for row in rows
+        ]
 
         return jsonify(
             {
