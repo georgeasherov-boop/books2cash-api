@@ -12,7 +12,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v11_free_cache"
+VERSION = "books2cash_backend_v12_free_cache_clean_media"
 
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 
@@ -59,12 +59,17 @@ GENERIC_TITLES = [
     "shop",
     "warenkorb",
     "login",
+    "condition very good",
+    "condition good",
+    "condition acceptable",
+    "used very good",
 ]
 
 KNOWN_ITEMS = {
     "4049834002961": {
         "title": "Love and Other Disasters",
-        "author": "Alek Keshishian / Brittany Murphy / Matthew Rhys",
+        "author": "Regie: Alek Keshishian · Brittany Murphy / Matthew Rhys · DVD",
+        "details": "DVD · Film · Regie: Alek Keshishian · Darsteller: Brittany Murphy, Matthew Rhys",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
@@ -72,6 +77,7 @@ KNOWN_ITEMS = {
     "4042564128512": {
         "title": "Der Duft der grünen Papaya",
         "author": "Regie: Tran Anh Hung · DVD · Frankreich 1993 · FSK 6 · ca. 100 Minuten",
+        "details": "DVD · Film · Frankreich 1993 · Regie: Tran Anh Hung · FSK 6 · ca. 100 Minuten",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
@@ -79,6 +85,23 @@ KNOWN_ITEMS = {
     "7321925014167": {
         "title": "Sex and the City – Der Film",
         "author": "Regie: Michael Patrick King · DVD · FSK 12 · 139 Minuten",
+        "details": "DVD · Film · Regie: Michael Patrick King · FSK 12 · 139 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+    },
+    "7321921396809": {
+        "title": "O.C., California - Die komplette erste Staffel (7 DVDs)",
+        "author": "Peter Gallagher / Kelly Rowan · Warner Home Video · DVD · FSK 12 · 1130 Minuten",
+        "details": "DVD-Box · TV-Serie · Warner Home Video · FSK 12 · 7 DVDs · ca. 1130 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+    },
+    "7321925008463": {
+        "title": "Hairspray",
+        "author": "Regie: Adam Shankman · DVD · USA 2007 · FSK 0 · 112 Minuten",
+        "details": "DVD · Film · USA 2007 · Regie: Adam Shankman · FSK 0 · 112 Minuten",
         "item_type": "DVD",
         "source": "known_dvd_cache",
         "confidence": 99,
@@ -86,6 +109,7 @@ KNOWN_ITEMS = {
     "9782266353267": {
         "title": "Les Assassins de l'aube",
         "author": "Michel Bussi · Pocket · Französisches Buch · ISBN-10: 2266353268",
+        "details": "Buch · Französisch · Autor: Michel Bussi · Verlag: Pocket · ISBN-13: 9782266353267",
         "item_type": "Buch",
         "source": "known_book_cache",
         "confidence": 99,
@@ -134,8 +158,17 @@ def db_connect():
     return conn
 
 
+def ensure_column(conn, table, column, definition):
+    existing = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    existing_names = {row["name"] for row in existing}
+
+    if column not in existing_names:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db():
     conn = db_connect()
+
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS media_cache (
@@ -150,12 +183,23 @@ def init_db():
         )
         """
     )
+
+    ensure_column(conn, "media_cache", "details", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "creator", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "publisher", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "year", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "language", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "medium", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "platform", "TEXT DEFAULT ''")
+    ensure_column(conn, "media_cache", "manufacturer", "TEXT DEFAULT ''")
+
     conn.commit()
     conn.close()
 
 
 def cache_get(code):
     code = clean_code(code)
+
     if not code:
         return None
 
@@ -172,7 +216,15 @@ def cache_get(code):
 
         return {
             "title": row["title"],
-            "author": row["author"] or "-",
+            "author": row["author"] or row["details"] or "-",
+            "details": row["details"] or row["author"] or "-",
+            "creator": row["creator"] or "",
+            "publisher": row["publisher"] or "",
+            "year": row["year"] or "",
+            "language": row["language"] or "",
+            "medium": row["medium"] or "",
+            "platform": row["platform"] or "",
+            "manufacturer": row["manufacturer"] or "",
             "item_type": row["item_type"] or "Sonstiges",
             "source": row["source"] or "manual_cache",
             "confidence": int(row["confidence"] or 100),
@@ -182,7 +234,22 @@ def cache_get(code):
         return None
 
 
-def cache_save(code, title, author="-", item_type="Sonstiges", source="auto_cache", confidence=80):
+def cache_save(
+    code,
+    title,
+    author="-",
+    item_type="Sonstiges",
+    source="auto_cache",
+    confidence=80,
+    details="",
+    creator="",
+    publisher="",
+    year="",
+    language="",
+    medium="",
+    platform="",
+    manufacturer="",
+):
     code = clean_code(code)
     title = cleanup_title(title)
 
@@ -190,6 +257,7 @@ def cache_save(code, title, author="-", item_type="Sonstiges", source="auto_cach
         return False
 
     author = str(author or "-").strip()
+    details = str(details or author or "-").strip()
     item_type = str(item_type or "Sonstiges").strip()
     source = str(source or "auto_cache").strip()
     now = int(time.time())
@@ -199,18 +267,44 @@ def cache_save(code, title, author="-", item_type="Sonstiges", source="auto_cach
         conn.execute(
             """
             INSERT INTO media_cache (
-                code, title, author, item_type, source, confidence, created_at, updated_at
+                code, title, author, details, creator, publisher, year, language,
+                medium, platform, manufacturer, item_type, source, confidence, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(code) DO UPDATE SET
                 title = excluded.title,
                 author = excluded.author,
+                details = excluded.details,
+                creator = excluded.creator,
+                publisher = excluded.publisher,
+                year = excluded.year,
+                language = excluded.language,
+                medium = excluded.medium,
+                platform = excluded.platform,
+                manufacturer = excluded.manufacturer,
                 item_type = excluded.item_type,
                 source = excluded.source,
                 confidence = excluded.confidence,
                 updated_at = excluded.updated_at
             """,
-            (code, title, author, item_type, source, int(confidence), now, now),
+            (
+                code,
+                title,
+                author,
+                details,
+                creator,
+                publisher,
+                year,
+                language,
+                medium,
+                platform,
+                manufacturer,
+                item_type,
+                source,
+                int(confidence),
+                now,
+                now,
+            ),
         )
         conn.commit()
         conn.close()
@@ -224,7 +318,7 @@ init_db()
 
 
 # -------------------------------------------------
-# Text / Preise / HTTP
+# Text / HTTP / Preise
 # -------------------------------------------------
 def normalize_price(value):
     if value is None:
@@ -395,6 +489,9 @@ def get_strict_prices_from_url(url, code, min_price=0.50, max_price=1000):
     }
 
 
+# -------------------------------------------------
+# Titel / Typen / Ergebnisformat
+# -------------------------------------------------
 def is_generic_title(title):
     text = (title or "").strip().lower()
 
@@ -442,9 +539,72 @@ def cleanup_title(title):
         flags=re.IGNORECASE,
     ).strip()
 
-    title = title.strip(" -|:;,.")
+    title = re.sub(
+        r"\s*\|\s*(DVD|Blu-ray|Bluray|CD)\s*\|\s*Condition\s+.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = re.sub(
+        r"\s*\|\s*Condition\s+.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return title.strip(" -|:;,.")
+
+
+def clean_upc_listing_title(title):
+    original = str(title or "")
+    title = cleanup_title(original)
+
+    title = re.sub(
+        r"\s*\|\s*(DVD|Blu-ray|Bluray|CD)\s*\|\s*Condition\s+.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = re.sub(
+        r"\s*\|\s*Condition\s+.*$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = re.sub(
+        r"\s*\|\s*(DVD|Blu-ray|Bluray|CD)$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = re.sub(
+        r"\s+By\s+(.+)$",
+        "",
+        title,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    title = title.replace("Dvd", "DVD").replace("Blu Ray", "Blu-ray")
+
+    title = re.sub(r"\s+", " ", title).strip(" -|:;,.")
 
     return title
+
+
+def extract_by_creator(title):
+    match = re.search(r"\bBy\s+([^|]+)", str(title or ""), flags=re.IGNORECASE)
+
+    if match:
+        creator = match.group(1).strip(" -|:;,.")
+
+        if creator:
+            return creator
+
+    return ""
 
 
 def detect_item_type(code, title="", author="", source=""):
@@ -462,6 +622,7 @@ def detect_item_type(code, title="", author="", source=""):
             " dvd",
             "dvd ",
             "dvd-",
+            "| dvd",
             "film",
             "movie",
             "fsk",
@@ -497,6 +658,7 @@ def detect_item_type(code, title="", author="", source=""):
             "album",
             "soundtrack",
             "cd ",
+            "| cd",
         ]
     ):
         return "CD"
@@ -565,7 +727,80 @@ def detect_item_type(code, title="", author="", source=""):
     return "Sonstiges"
 
 
-def make_result(title, author="-", source="unknown", item_type=None, confidence=50):
+def make_info_line(
+    item_type,
+    creator="",
+    publisher="",
+    year="",
+    language="",
+    medium="",
+    platform="",
+    manufacturer="",
+    extra="",
+):
+    parts = []
+
+    if creator:
+        if item_type in ["DVD", "Blu-ray"]:
+            if not creator.lower().startswith("regie"):
+                parts.append(f"Regie/Info: {creator}")
+            else:
+                parts.append(creator)
+        elif item_type == "Buch":
+            parts.append(creator)
+        elif item_type in ["CD", "Schallplatte"]:
+            parts.append(creator)
+        elif item_type in ["Konsolenspiel", "Konsole"]:
+            parts.append(creator)
+        else:
+            parts.append(creator)
+
+    if publisher:
+        parts.append(publisher)
+
+    if platform:
+        parts.append(platform)
+
+    if manufacturer:
+        parts.append(manufacturer)
+
+    if medium:
+        parts.append(medium)
+
+    if language:
+        parts.append(language)
+
+    if year:
+        parts.append(str(year))
+
+    if extra:
+        parts.append(extra)
+
+    clean_parts = []
+
+    for part in parts:
+        part = str(part or "").strip()
+        if part and part not in clean_parts:
+            clean_parts.append(part)
+
+    return " · ".join(clean_parts) if clean_parts else "-"
+
+
+def make_result(
+    title,
+    author="-",
+    source="unknown",
+    item_type=None,
+    confidence=50,
+    details="",
+    creator="",
+    publisher="",
+    year="",
+    language="",
+    medium="",
+    platform="",
+    manufacturer="",
+):
     title = cleanup_title(title)
 
     if not title or is_generic_title(title):
@@ -573,9 +808,32 @@ def make_result(title, author="-", source="unknown", item_type=None, confidence=
 
     item_type = item_type or detect_item_type("", title, author, source)
 
+    if not details:
+        details = make_info_line(
+            item_type=item_type,
+            creator=creator or author,
+            publisher=publisher,
+            year=year,
+            language=language,
+            medium=medium,
+            platform=platform,
+            manufacturer=manufacturer,
+        )
+
+    if not author or author == "-":
+        author = details or "-"
+
     return {
         "title": title,
         "author": author or "-",
+        "details": details or author or "-",
+        "creator": creator or "",
+        "publisher": publisher or "",
+        "year": str(year or ""),
+        "language": language or "",
+        "medium": medium or "",
+        "platform": platform or "",
+        "manufacturer": manufacturer or "",
         "source": source,
         "item_type": item_type,
         "confidence": int(confidence),
@@ -617,7 +875,6 @@ def fetch_google_books(code):
             queries.append(f"isbn:{isbn10}")
 
         countries = ["DE", "US", "GB", "FR", "IT", "TR", "RU"]
-
         candidates = []
 
         for query in queries:
@@ -640,15 +897,27 @@ def fetch_google_books(code):
                     authors = info.get("authors", []) or []
                     publisher = info.get("publisher", "") or ""
                     published = info.get("publishedDate", "") or ""
+                    language = info.get("language", "") or ""
 
-                    author = ", ".join(authors).strip() if authors else "-"
-
-                    if publisher or published:
-                        author = f"{author} · {publisher} {published}".strip(" ·")
+                    creator = ", ".join(authors).strip() if authors else ""
+                    author_line = make_info_line(
+                        item_type="Buch",
+                        creator=creator,
+                        publisher=publisher,
+                        year=published,
+                        language=language.upper() if language else "",
+                        medium="Buch",
+                    )
 
                     result = make_result(
                         title=title,
-                        author=author,
+                        author=author_line,
+                        details=author_line,
+                        creator=creator,
+                        publisher=publisher,
+                        year=published,
+                        language=language.upper() if language else "",
+                        medium="Buch",
                         source=f"google_books_{country}",
                         item_type="Buch",
                         confidence=88,
@@ -666,7 +935,6 @@ def fetch_google_books(code):
 def fetch_openlibrary(code):
     try:
         codes = [clean_code(code)]
-
         isbn10 = isbn13_to_isbn10(code)
 
         if isbn10:
@@ -682,7 +950,6 @@ def fetch_openlibrary(code):
 
             response = requests.get(url, headers=JSON_HEADERS, timeout=6)
             data = response.json()
-
             item = data.get(f"ISBN:{code_item}")
 
             if not item:
@@ -705,16 +972,26 @@ def fetch_openlibrary(code):
                 if publisher.get("name")
             ]
 
-            author_text = ", ".join(authors) if authors else "-"
+            creator = ", ".join(authors)
+            publisher = ", ".join(publishers)
+            year = item.get("publish_date", "")
 
-            if publishers or item.get("publish_date"):
-                author_text = (
-                    f"{author_text} · {', '.join(publishers)} {item.get('publish_date', '')}"
-                ).strip(" ·")
+            author_line = make_info_line(
+                item_type="Buch",
+                creator=creator,
+                publisher=publisher,
+                year=year,
+                medium="Buch",
+            )
 
             result = make_result(
                 title=title,
-                author=author_text,
+                author=author_line,
+                details=author_line,
+                creator=creator,
+                publisher=publisher,
+                year=year,
+                medium="Buch",
                 source="openlibrary",
                 item_type="Buch",
                 confidence=84,
@@ -732,7 +1009,6 @@ def fetch_openlibrary(code):
 def fetch_crossref(code):
     try:
         code_clean = clean_code(code)
-
         url = f"https://api.crossref.org/works?filter=isbn:{quote(code_clean)}&rows=3"
         response = requests.get(url, headers=JSON_HEADERS, timeout=6)
         data = response.json()
@@ -755,10 +1031,10 @@ def fetch_crossref(code):
 
             for author in item.get("author", []) or []:
                 name = f"{author.get('given', '')} {author.get('family', '')}".strip()
-
                 if name:
                     authors.append(name)
 
+            creator = ", ".join(authors)
             publisher = item.get("publisher", "") or ""
             year = ""
 
@@ -771,14 +1047,22 @@ def fetch_crossref(code):
             if parts and parts[0]:
                 year = str(parts[0][0])
 
-            author_text = ", ".join(authors) if authors else "-"
-
-            if publisher or year:
-                author_text = f"{author_text} · {publisher} {year}".strip(" ·")
+            author_line = make_info_line(
+                item_type="Buch",
+                creator=creator,
+                publisher=publisher,
+                year=year,
+                medium="Buch",
+            )
 
             result = make_result(
                 title=title,
-                author=author_text,
+                author=author_line,
+                details=author_line,
+                creator=creator,
+                publisher=publisher,
+                year=year,
+                medium="Buch",
                 source="crossref",
                 item_type="Buch",
                 confidence=78,
@@ -796,7 +1080,6 @@ def fetch_crossref(code):
 def fetch_dnb(code):
     try:
         code_clean = clean_code(code)
-
         url = (
             "https://services.dnb.de/sru/dnb?version=1.1&operation=searchRetrieve"
             f"&query=isbn={quote(code_clean)}&recordSchema=MARC21-xml"
@@ -811,32 +1094,52 @@ def fetch_dnb(code):
         namespace = {"marc": "http://www.loc.gov/MARC21/slim"}
 
         title = None
-        author = None
+        creator = None
+        publisher = None
+        year = None
 
         for field in root.findall(".//marc:datafield", namespace):
             tag = field.attrib.get("tag")
 
             if tag == "245":
                 parts = []
-
                 for sub in field.findall("marc:subfield", namespace):
                     if sub.attrib.get("code") in ["a", "b"] and sub.text:
                         parts.append(sub.text.strip())
-
                 if parts:
                     title = cleanup_title(" ".join(parts).strip(" /:"))
 
             if tag == "100":
                 for sub in field.findall("marc:subfield", namespace):
                     if sub.attrib.get("code") == "a" and sub.text:
-                        author = sub.text.strip(" ,")
+                        creator = sub.text.strip(" ,")
+
+            if tag == "260":
+                for sub in field.findall("marc:subfield", namespace):
+                    if sub.attrib.get("code") == "b" and sub.text:
+                        publisher = sub.text.strip(" ,")
+                    if sub.attrib.get("code") == "c" and sub.text:
+                        year = sub.text.strip(" ,.")
 
         if not title:
             return None
 
+        author_line = make_info_line(
+            item_type="Buch",
+            creator=creator or "",
+            publisher=publisher or "",
+            year=year or "",
+            medium="Buch",
+        )
+
         return make_result(
             title=title,
-            author=author or "-",
+            author=author_line,
+            details=author_line,
+            creator=creator or "",
+            publisher=publisher or "",
+            year=year or "",
+            medium="Buch",
             source="dnb",
             item_type="Buch",
             confidence=75,
@@ -849,7 +1152,6 @@ def fetch_dnb(code):
 def fetch_bnf(code):
     try:
         code_clean = clean_code(code)
-
         url = (
             "https://catalogue.bnf.fr/api/SRU?version=1.2&operation=searchRetrieve"
             f"&query=bib.isbn%20all%20%22{quote(code_clean)}%22&maximumRecords=5"
@@ -867,7 +1169,7 @@ def fetch_bnf(code):
 
         soup = BeautifulSoup(response.text, "xml")
         title = None
-        author = "-"
+        creator = ""
 
         for tag in soup.find_all():
             name = tag.name.lower()
@@ -880,15 +1182,26 @@ def fetch_bnf(code):
             name = tag.name.lower()
 
             if (name.endswith("creator") or name.endswith("author")) and tag.get_text(strip=True):
-                author = tag.get_text(" ", strip=True)
+                creator = tag.get_text(" ", strip=True)
                 break
 
         if not title:
             return None
 
+        author_line = make_info_line(
+            item_type="Buch",
+            creator=creator,
+            medium="Buch",
+            language="FR",
+        )
+
         return make_result(
             title=title,
-            author=author,
+            author=author_line,
+            details=author_line,
+            creator=creator,
+            language="FR",
+            medium="Buch",
             source="bnf_france",
             item_type="Buch",
             confidence=82,
@@ -917,35 +1230,76 @@ def fetch_upcitemdb(code):
         if not items:
             return None
 
-        item = items[0]
+        candidates = []
 
-        title = cleanup_title(item.get("title", ""))
-        brand = item.get("brand", "") or ""
-        category = item.get("category", "") or ""
-        description = item.get("description", "") or ""
+        for item in items:
+            raw_title = item.get("title", "") or ""
+            title = clean_upc_listing_title(raw_title)
 
-        if not title or is_generic_title(title):
-            return None
+            if not title or is_generic_title(title):
+                continue
 
-        item_type = detect_item_type(
-            code_clean,
-            title,
-            f"{brand} {category} {description}",
-            "upcitemdb",
-        )
+            brand = item.get("brand", "") or ""
+            category = item.get("category", "") or ""
+            description = item.get("description", "") or ""
+            creator = extract_by_creator(raw_title)
 
-        author = " · ".join([x for x in [brand, category] if x]) or description[:160] or "-"
+            item_type = detect_item_type(
+                code_clean,
+                raw_title,
+                f"{brand} {category} {description}",
+                "upcitemdb",
+            )
 
-        if "dvd & blu-ray players" in author.lower():
-            author = brand or "-"
+            medium = ""
+            if item_type in ["DVD", "Blu-ray", "CD", "Schallplatte"]:
+                medium = item_type
 
-        return make_result(
-            title=title,
-            author=author,
-            source="upcitemdb",
-            item_type=item_type,
-            confidence=76,
-        )
+            publisher = brand
+            manufacturer = brand
+
+            if "dvd & blu-ray players" in category.lower():
+                category = ""
+                manufacturer = ""
+                publisher = ""
+
+            author_line = make_info_line(
+                item_type=item_type,
+                creator=creator,
+                publisher=publisher,
+                medium=medium,
+                manufacturer=manufacturer if item_type not in ["DVD", "Blu-ray"] else "",
+                extra=category if category and "dvd & blu-ray players" not in category.lower() else "",
+            )
+
+            confidence = 76
+
+            if "condition" in raw_title.lower():
+                confidence -= 12
+
+            if " by " in raw_title.lower():
+                confidence -= 5
+
+            if item_type in ["DVD", "Blu-ray", "CD", "Schallplatte", "Konsolenspiel"]:
+                confidence += 6
+
+            result = make_result(
+                title=title,
+                author=author_line,
+                details=author_line,
+                creator=creator,
+                publisher=publisher,
+                medium=medium,
+                manufacturer=manufacturer,
+                source="upcitemdb_cleaned",
+                item_type=item_type,
+                confidence=confidence,
+            )
+
+            if result:
+                candidates.append(result)
+
+        return best_candidate(candidates)
 
     except Exception:
         return None
@@ -982,29 +1336,33 @@ def fetch_musicbrainz(code):
                 continue
 
             artists = []
+            formats = []
 
             for credit in release.get("artist-credit", []) or []:
                 name = credit.get("name") or (credit.get("artist") or {}).get("name")
-
                 if name:
                     artists.append(name)
-
-            formats = []
 
             for media in release.get("media", []) or []:
                 if media.get("format"):
                     formats.append(media.get("format"))
 
             item_type = "Schallplatte" if any("vinyl" in fmt_item.lower() for fmt_item in formats) else "CD"
+            creator = ", ".join(artists)
+            medium = ", ".join(formats) if formats else item_type
 
-            author = ", ".join(artists) if artists else "-"
-
-            if formats:
-                author = f"{author} · {', '.join(formats)}".strip(" ·")
+            author_line = make_info_line(
+                item_type=item_type,
+                creator=creator,
+                medium=medium,
+            )
 
             result = make_result(
                 title=title,
-                author=author,
+                author=author_line,
+                details=author_line,
+                creator=creator,
+                medium=medium,
                 source="musicbrainz",
                 item_type=item_type,
                 confidence=86,
@@ -1058,10 +1416,15 @@ def fetch_wikidata_gtin(code):
             description = row.get("itemDescription", {}).get("value", "") or "-"
 
             item_type = detect_item_type(code_clean, title, description, "wikidata gtin")
+            author_line = make_info_line(
+                item_type=item_type,
+                extra=description,
+            )
 
             result = make_result(
                 title=title,
-                author=description,
+                author=author_line,
+                details=author_line,
                 source="wikidata_gtin",
                 item_type=item_type,
                 confidence=74,
@@ -1165,8 +1528,8 @@ def fetch_duckduckgo_product(code):
 
     else:
         queries = [
-            f'"{code_clean}" DVD film',
-            f'"{code_clean}" Blu-ray film',
+            f'"{code_clean}" DVD film title',
+            f'"{code_clean}" Blu-ray film title',
             f'"{code_clean}" reBuy medimops Booklooker',
             f'"{code_clean}" Amazon DVD',
             f'"{code_clean}" eBay DVD',
@@ -1199,14 +1562,32 @@ def fetch_duckduckgo_product(code):
             if item_type != "Sonstiges":
                 score += 8
 
-            trusted = ["rebuy", "medimops", "booklooker", "amazon", "ebay", "abebooks", "fnac", "lisez", "worldcat", "discogs"]
+            trusted = [
+                "rebuy",
+                "medimops",
+                "booklooker",
+                "amazon",
+                "ebay",
+                "abebooks",
+                "fnac",
+                "lisez",
+                "worldcat",
+                "discogs",
+            ]
 
             if any(x in row.get("url", "").lower() for x in trusted):
                 score += 5
 
+            author_line = make_info_line(
+                item_type=item_type,
+                medium=item_type if item_type in ["DVD", "Blu-ray", "CD", "Schallplatte"] else "",
+                extra=row.get("snippet", "") or "",
+            )
+
             result_item = make_result(
                 title=title,
-                author=row.get("snippet", "-") or "-",
+                author=author_line,
+                details=author_line,
                 source="duckduckgo_free_fallback",
                 item_type=item_type,
                 confidence=score,
@@ -1229,6 +1610,7 @@ def get_media_info(code):
         return {
             "title": "Nicht gefunden",
             "author": "-",
+            "details": "-",
             "item_type": "Sonstiges",
             "source": "invalid_code",
             "confidence": 0,
@@ -1260,10 +1642,10 @@ def get_media_info(code):
                 candidates.append(result)
     else:
         for fn in [
-            fetch_upcitemdb,
             fetch_musicbrainz,
             fetch_wikidata_gtin,
             fetch_duckduckgo_product,
+            fetch_upcitemdb,
         ]:
             result = fn(code_clean)
             if result:
@@ -1276,7 +1658,23 @@ def get_media_info(code):
             code=code_clean,
             title=best.get("title", ""),
             author=best.get("author", "-"),
-            item_type=best.get("item_type", detect_item_type(code_clean, best.get("title", ""), best.get("author", ""), best.get("source", ""))),
+            details=best.get("details", best.get("author", "-")),
+            creator=best.get("creator", ""),
+            publisher=best.get("publisher", ""),
+            year=best.get("year", ""),
+            language=best.get("language", ""),
+            medium=best.get("medium", ""),
+            platform=best.get("platform", ""),
+            manufacturer=best.get("manufacturer", ""),
+            item_type=best.get(
+                "item_type",
+                detect_item_type(
+                    code_clean,
+                    best.get("title", ""),
+                    best.get("author", ""),
+                    best.get("source", ""),
+                ),
+            ),
             source=best.get("source", "auto_cache"),
             confidence=best.get("confidence", 80),
         )
@@ -1285,6 +1683,14 @@ def get_media_info(code):
     return {
         "title": "Nicht gefunden",
         "author": "-",
+        "details": "-",
+        "creator": "",
+        "publisher": "",
+        "year": "",
+        "language": "",
+        "medium": "",
+        "platform": "",
+        "manufacturer": "",
         "item_type": "Buch" if is_isbn(code_clean) else "Sonstiges",
         "source": "none",
         "confidence": 0,
@@ -1570,7 +1976,15 @@ def build_lookup_response(code):
         "isbn": code_clean,
         "code": code_clean,
         "title": info.get("title", ""),
-        "author": info.get("author", ""),
+        "author": info.get("author", info.get("details", "")),
+        "details": info.get("details", info.get("author", "")),
+        "creator": info.get("creator", ""),
+        "publisher": info.get("publisher", ""),
+        "year": info.get("year", ""),
+        "language": info.get("language", ""),
+        "medium": info.get("medium", ""),
+        "platform": info.get("platform", ""),
+        "manufacturer": info.get("manufacturer", ""),
         "source": info.get("source", "none"),
         "item_type": item_type,
         "confidence": info.get("confidence", 0),
@@ -1617,12 +2031,24 @@ def home():
             "status": "Books2Cash API läuft",
             "version": VERSION,
             "hint": "Nutze /isbn/<code>, /lookup/<code>, /learn/<code> oder /cache/<code>",
+            "fields": {
+                "title": "Titel / Artikelname",
+                "author": "Kompatibles Info-Feld für aktuelle Android-App",
+                "details": "Ausführliche Info für neue App-Version",
+                "creator": "Autor / Regie / Künstler / Entwickler",
+                "publisher": "Verlag / Studio / Label / Publisher",
+                "medium": "Buch / DVD / Blu-ray / CD / Vinyl",
+                "platform": "PS5 / PS4 / Xbox / Switch usw.",
+                "manufacturer": "Hersteller",
+                "item_type": "Kategorie",
+            },
             "features": [
                 "kostenlose Quellen",
                 "SQLite-Cache",
                 "manuelles Lernen über /learn",
                 "internationale ISBN-Suche",
                 "DVD/Blu-ray/CD/Vinyl/Games via EAN",
+                "bereinigte UPCitemdb-Titel",
                 "Google Books",
                 "OpenLibrary",
                 "Crossref",
@@ -1685,8 +2111,17 @@ def learn_route(code):
 
     title = data.get("title", "").strip()
     author = data.get("author", data.get("info", "-")).strip()
+    details = data.get("details", author).strip()
     item_type = data.get("type", data.get("item_type", "Sonstiges")).strip()
     source = data.get("source", "manual_learn").strip()
+
+    creator = data.get("creator", "").strip()
+    publisher = data.get("publisher", "").strip()
+    year = data.get("year", "").strip()
+    language = data.get("language", "").strip()
+    medium = data.get("medium", "").strip()
+    platform = data.get("platform", "").strip()
+    manufacturer = data.get("manufacturer", "").strip()
 
     try:
         confidence = int(data.get("confidence", 100))
@@ -1712,11 +2147,25 @@ def learn_route(code):
             }
         ), 400
 
+    if not details:
+        details = author
+
+    if not item_type or item_type == "Sonstiges":
+        item_type = detect_item_type(code_clean, title, author + " " + details, source)
+
     saved = cache_save(
         code=code_clean,
         title=title,
-        author=author or "-",
-        item_type=item_type or detect_item_type(code_clean, title, author, source),
+        author=author or details or "-",
+        details=details or author or "-",
+        creator=creator,
+        publisher=publisher,
+        year=year,
+        language=language,
+        medium=medium,
+        platform=platform,
+        manufacturer=manufacturer,
+        item_type=item_type,
         source=source,
         confidence=confidence,
     )
@@ -1728,8 +2177,16 @@ def learn_route(code):
             "code": code_clean,
             "saved": {
                 "title": cleanup_title(title),
-                "author": author or "-",
-                "item_type": item_type or detect_item_type(code_clean, title, author, source),
+                "author": author or details or "-",
+                "details": details or author or "-",
+                "creator": creator,
+                "publisher": publisher,
+                "year": year,
+                "language": language,
+                "medium": medium,
+                "platform": platform,
+                "manufacturer": manufacturer,
+                "item_type": item_type,
                 "source": source,
                 "confidence": confidence,
             },
@@ -1742,7 +2199,13 @@ def cache_all_route():
     try:
         conn = db_connect()
         rows = conn.execute(
-            "SELECT code, title, author, item_type, source, confidence, updated_at FROM media_cache ORDER BY updated_at DESC LIMIT 500"
+            """
+            SELECT code, title, author, details, creator, publisher, year, language,
+                   medium, platform, manufacturer, item_type, source, confidence, updated_at
+            FROM media_cache
+            ORDER BY updated_at DESC
+            LIMIT 500
+            """
         ).fetchall()
         conn.close()
 
@@ -1754,6 +2217,14 @@ def cache_all_route():
                     "code": row["code"],
                     "title": row["title"],
                     "author": row["author"],
+                    "details": row["details"],
+                    "creator": row["creator"],
+                    "publisher": row["publisher"],
+                    "year": row["year"],
+                    "language": row["language"],
+                    "medium": row["medium"],
+                    "platform": row["platform"],
+                    "manufacturer": row["manufacturer"],
                     "item_type": row["item_type"],
                     "source": row["source"],
                     "confidence": row["confidence"],
