@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v24_systematic_media_cleanup_verified"
+VERSION = "books2cash_backend_v25_media_type_quality_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/24.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/25.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,14 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "8717418152529": {
+        "title": "Les Aristochats - Édition Exclusive",
+        "details": "Wolfgang Reitherman · Disney · DVD · Französisch/Englisch · 1970 · ca. 75 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "4031778060572": {
         "title": "Die Pfefferkörner - Staffel 7 (Folgen 79-91)",
         "details": "DVD · TV-Serie · 2 DVDs · Folgen 79-91",
@@ -315,6 +323,8 @@ def normalize_duplicate_title(title):
 
 
 MEDIA_TITLE_ALIASES = {
+    "les aristochats edition exclusive": "Les Aristochats - Édition Exclusive",
+    "aristochats edition exclusive": "Les Aristochats - Édition Exclusive",
     "dvd quentin tarantino reservoir dogs german boxed keitel roth buscemi penn": "Reservoir Dogs",
     "quentin tarantino reservoir dogs german boxed keitel roth buscemi penn": "Reservoir Dogs",
     "reservoir dogs german boxed keitel roth buscemi penn": "Reservoir Dogs",
@@ -517,17 +527,55 @@ def is_bad_title(title):
     return False
 
 
+def normalize_media_detection_text(value):
+    """Remove ambiguous catalogue/category phrases before medium detection.
+    Phrases like 'DVD & Blu-ray' or 'DVD & Blu-ray Players' must not classify a DVD as Blu-ray.
+    """
+    text = str(value or "").lower()
+    noise_phrases = [
+        "dvd & blu-ray players",
+        "dvd and blu-ray players",
+        "dvd & blu ray players",
+        "dvd and blu ray players",
+        "dvd & blu-ray",
+        "dvd and blu-ray",
+        "dvd & blu ray",
+        "dvd and blu ray",
+        "dvds & videos",
+        "dvd players",
+        "blu-ray players",
+        "blu ray players",
+        "video players & recorders",
+        "electronics > video",
+        "media > dvds & videos",
+        "vehicles & parts",
+        "vehicle parts",
+    ]
+    for phrase in noise_phrases:
+        text = text.replace(phrase, " ")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def detect_item_type(code, title="", details="", source=""):
-    text = f"{code} {title} {details} {source}".lower()
+    raw_text = f"{code} {title} {details} {source}".lower()
+    text = normalize_media_detection_text(raw_text)
     if is_isbn(code):
         return "Buch"
-    if any(x in text for x in ["blu-ray", "bluray", "blu ray", "bd-rom"]):
+
+    # Real Blu-ray must be explicit in the title/details, not just in broad categories.
+    if re.search(r"\b(blu[ -]?ray|bluray|bd-rom|blu-ray disc|blu ray disc)\b", text):
         return "Blu-ray"
-    if any(x in text for x in [" dvd", "dvd ", "dvd-", "| dvd", " film", "movie", "fsk", "regie", "director", "warner", "universal pictures", "paramount", "sony pictures"]):
+
+    # DVD wins when DVD is explicitly in the listing and Blu-ray only appeared in removed category noise.
+    if re.search(r"\b(\d+\s*)?(dvd|dvds|dvd-rom)\b", text) or any(
+        x in text for x in [" film", "movie", "fsk", "regie", "director", "warner", "universal pictures", "paramount", "sony pictures", "disney"]
+    ):
         return "DVD"
+
     if any(x in text for x in ["vinyl", "schallplatte", " lp", "gramophone record", "12 inch", "7 inch"]):
         return "Schallplatte"
-    if any(x in text for x in ["audio cd", "compact disc", "musicbrainz", "album", "soundtrack", "cd ", "| cd"]):
+    if re.search(r"\b(audio cd|compact disc|cd)\b", text) or any(x in text for x in ["musicbrainz", "album", "soundtrack"]):
         return "CD"
     if any(x in text for x in ["playstation", "ps5", "ps4", "xbox", "nintendo switch", "nintendo", "videospiel", "video game"]):
         if any(x in text for x in ["konsole", "console", "controller", "joy-con", "dualsense", "dualshock"]):
@@ -817,7 +865,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/24.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/25.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -890,13 +938,14 @@ def fetch_upcitemdb(code):
             category = item.get("category", "") or ""
             description = item.get("description", "") or ""
             raw_joined = f"{raw_title} {brand} {category} {description}"
-            item_type = detect_item_type(c, raw_title, f"{brand} {category} {description}", "upcitemdb")
-            raw_lower = raw_joined.lower()
-            # UPCitemdb categories are often wrong for DVDs/Blu-rays; title text wins.
-            if re.search(r"\b(dvd|dvd-rom|d v d)\b", raw_lower) and not re.search(r"blu[ -]?ray|bluray", raw_lower):
-                item_type = "DVD"
-            elif re.search(r"blu[ -]?ray|bluray", raw_lower):
+            # UPCitemdb categories are often broad/wrong: e.g. "DVD & Blu-ray Players".
+            # Medium is inferred from title/description/brand first; broad category phrases are stripped.
+            item_type = detect_item_type(c, raw_title, f"{brand} {description}", "upcitemdb")
+            raw_media_text = normalize_media_detection_text(f"{raw_title} {description} {brand}")
+            if re.search(r"\b(blu[ -]?ray|bluray|bd-rom|blu-ray disc|blu ray disc)\b", raw_media_text):
                 item_type = "Blu-ray"
+            elif re.search(r"\b(\d+\s*)?(dvd|dvds|dvd-rom)\b", raw_media_text):
+                item_type = "DVD"
             bad_category_words = ["dvd & blu-ray players", "vehicles", "vehicle parts", "accessories", "electronics > video > video players"]
             if any(w in category.lower() for w in bad_category_words):
                 category = ""
@@ -1377,7 +1426,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V24: Systematische Medien-Bereinigung. UPCitemdb-Rohtitel werden nicht final übernommen; Cast-/Shop-/Zustandsmüll wird entfernt."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V25: Medien-Typ-Quality-Gate. Broad categories like DVD & Blu-ray no longer force Blu-ray; exact title/medium wins."})
 
 
 @app.route("/health")
