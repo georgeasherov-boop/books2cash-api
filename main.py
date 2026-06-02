@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v21_german_sorttitle_dvd_verified"
+VERSION = "books2cash_backend_v22_reservoir_dogs_cleanup_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/21.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/22.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,14 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "828765581097": {
+        "title": "Reservoir Dogs",
+        "details": "Regie: Quentin Tarantino · Harvey Keitel / Tim Roth / Steve Buscemi / Michael Madsen · DVD · USA 1992 · FSK 18 · 94 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "4010324021946": {
         "title": "Die Träumer",
         "details": "Regie: Bernardo Bertolucci · Michael Pitt / Louis Garrel / Eva Green · DVD · Frankreich 2003/2004 · FSK 16 · 110 Minuten",
@@ -291,6 +299,10 @@ def normalize_duplicate_title(title):
 
 
 MEDIA_TITLE_ALIASES = {
+    "dvd quentin tarantino reservoir dogs german boxed keitel roth buscemi penn": "Reservoir Dogs",
+    "quentin tarantino reservoir dogs german boxed keitel roth buscemi penn": "Reservoir Dogs",
+    "reservoir dogs german boxed keitel roth buscemi penn": "Reservoir Dogs",
+    "dvd reservoir dogs": "Reservoir Dogs",
     "trumer die dreamers": "Die Träumer",
     "traeumer die dreamers": "Die Träumer",
     "träumer die dreamers": "Die Träumer",
@@ -310,13 +322,26 @@ def normalize_alias_key(value):
     return key
 
 
+
+def remove_media_prefix_and_actor_tail(title):
+    """Clean noisy catalogue titles like:
+    'DVD Quentin Tarantino Reservoir Dogs German Boxed Keitel/Roth/Buscemi/Penn/' -> 'Reservoir Dogs'
+    without damaging normal titles.
+    """
+    t = cleanup_title(title)
+    t = re.sub(r"^(DVD|Blu-ray|Bluray|CD)\s+", "", t, flags=re.IGNORECASE).strip()
+    # Specific strong cleanup for the repeated Reservoir Dogs UPCitemdb style.
+    if re.search(r"reservoir\s+dogs", t, flags=re.IGNORECASE):
+        return "Reservoir Dogs"
+    return t
+
 def normalize_title_order(title):
     # Normalize catalog forms and foreign-sort titles.
     # Examples:
     #   "Haunted Airman The" -> "The Haunted Airman"
     #   "Trumer, Die - Dreamers" -> "Die Träumer"
     #   "Candy - Candy" -> "Candy"
-    t = normalize_duplicate_title(cleanup_title(title))
+    t = normalize_duplicate_title(remove_media_prefix_and_actor_tail(title))
 
     alias_key = normalize_alias_key(t)
     if alias_key in MEDIA_TITLE_ALIASES:
@@ -672,7 +697,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/21.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/22.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1227,7 +1252,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V21 ergänzt deutsche Sortiertitel-Normalisierung und verifizierte DVD-Cache-Treffer."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V22 ergänzt Reservoir-Dogs-UPC-Bereinigung und weitere DVD-Cache-Treffer."})
 
 
 @app.route("/health")
