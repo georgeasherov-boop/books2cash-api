@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v27_fast_inventory_timeout_guard_verified"
+VERSION = "books2cash_backend_v28_reliable_scan_mode_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 4
 LOOKUP_TIMEOUT_SECONDS = 5
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 4
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/27.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/28.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,14 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "9002986191667": {
+        "title": "Drei zum Verlieben - Folgen 5-8",
+        "details": "Peter Kraus · Hans Clarin / Tabea Tiesler / Dirk Bach · DVD · 2 DVDs · Deutsch · FSK 6 · 23.11.2018",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "4030521307407": {
         "title": "John Carpenter's Ghosts of Mars",
         "details": "Regie: John Carpenter · Ice Cube / Natasha Henstridge / Jason Statham · DVD · Sony Pictures Home Entertainment · FSK 18 · 94 Minuten",
@@ -897,7 +905,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/27.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/28.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1410,6 +1418,8 @@ def lookup_product(code):
         "found": found,
         "verified": bool(best and best.get("verified")),
         "suggested": bool(best and best.get("suggested")),
+        "resolution_status": ("verified" if bool(best and best.get("verified")) else ("suggested" if bool(best and best.get("suggested")) else "unresolved")),
+        "scan_safe": bool(best and best.get("verified")),
         "confidence": int(best.get("confidence", 0)) if best else 0,
         "title": best.get("title", "") if best else "",
         "author": best.get("details", "") if best else "",
@@ -1562,7 +1572,7 @@ def combined_response(code, include_prices=False):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V27: Fast inventory mode. /isbn is product-data-first and skips price crawling unless ?prices=1 is used; lookup timeouts are guarded."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V28: Reliable scan mode. Fast product lookup, price crawling opt-in, verified/suggested/unresolved status so the app can keep scanning without trusting weak UPC titles."})
 
 
 @app.route("/health")
