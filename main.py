@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v25_media_type_quality_verified"
+VERSION = "books2cash_backend_v26_direct_movie_pages_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/25.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/26.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -47,10 +47,18 @@ TRUSTED_PRODUCT_DOMAINS = [
     "medimops.de", "rebuy.de", "booklooker.de", "jpc.de", "worldofbooks.com",
     "abebooks.", "fnac.", "lisez.com", "thalia.", "buecher.de", "bol.com",
     "discogs.com", "musicbrainz.org",
-    "filminfos.de", "cede.de", "product-search.net", "melando.de", "dvd-palace.de", "ofdb.de", "videobuster.de",
+    "filminfos.de", "cede.de", "product-search.net", "melando.de", "dvd-palace.de", "ofdb.de", "videobuster.de", "gamenatix.de", "picclick.",
 ]
 
 KNOWN_ITEMS = {
+    "4012050516789": {
+        "title": "Terminator 2 - Tag der Abrechnung",
+        "details": "Regie: James Cameron · Arnold Schwarzenegger / Linda Hamilton / Robert Patrick · DVD · VCL · FSK 16 · 132 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "8717418152529": {
         "title": "Les Aristochats - Édition Exclusive",
         "details": "Wolfgang Reitherman · Disney · DVD · Französisch/Englisch · 1970 · ca. 75 Minuten",
@@ -865,7 +873,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/25.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/26.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1111,6 +1119,98 @@ def fetch_product_page_candidate_from_url(code, url):
     return make_result(title, details, "trusted_product_page", item_type, 94, True, creator=creator, medium=medium if medium else item_type)
 
 
+
+DIRECT_MOVIE_PAGE_TEMPLATES = [
+    "https://www.booklooker.de/Filme/Angebote/ean%3D{code}",
+    "https://www.booklooker.de/Filme/Angebote?keywords={code}",
+    "https://www.medimops.de/produkte-C0/?fcIsSearch=1&searchparam={code}",
+    "https://www.rebuy.de/kaufen/suchen?q={code}",
+]
+
+
+def looks_like_catalog_noise(title):
+    t = normalize_alias_key(title)
+    noisy = [
+        "film gebraucht neu kaufen", "angebote", "artikel", "produktdetails",
+        "ean", "isbn", "zustand", "versand", "warenkorb", "kaufen",
+        "verkaufen", "suchergebnis", "suche", "preis", "paypal"
+    ]
+    return any(n in t for n in noisy)
+
+
+def extract_movie_title_from_verified_text(text, code):
+    """Extract clean movie/media title from pages that already contain the barcode.
+    This is intentionally conservative: it only looks for title + medium patterns
+    on verified pages such as Booklooker/medimops search result pages.
+    """
+    c = clean_code(code)
+    source = html_to_text(text) if "<" in str(text[:200]) else str(text or "")
+    source = source.replace("\xa0", " ")
+    source = re.sub(r"\s+", " ", source)
+    candidates = []
+
+    # Example: "Terminator 2 - Tag der Abrechnung · DVD · Schwarzenegger... EAN: 401..."
+    for m in re.finditer(r"([A-ZÄÖÜ0-9][^·|<>]{3,150}?)\s*[·|]\s*(DVD|Blu-ray|Blu Ray|CD)\s*[·|]", source, flags=re.IGNORECASE):
+        raw_title = m.group(1).strip()
+        medium = "Blu-ray" if "blu" in m.group(2).lower() else "CD" if m.group(2).lower() == "cd" else "DVD"
+        if str(c) in source[max(0, m.start()-400):m.end()+800] or str(c) in source:
+            title, creator = clean_media_listing_title(raw_title, c)
+            if title and not is_bad_title(title) and not looks_like_catalog_noise(title):
+                candidates.append((title, creator, medium))
+
+    # Example: "Terminator 2 - Tag der Abrechnung von James Cameron | DVD".
+    for m in re.finditer(r"([A-ZÄÖÜ0-9][^|<>]{3,150}?)\s+von\s+([^|<>]{2,80})\s*[|·-]\s*(DVD|Blu-ray|Blu Ray|CD)", source, flags=re.IGNORECASE):
+        raw_title = m.group(1).strip()
+        creator = cleanup_title(m.group(2))
+        medium = "Blu-ray" if "blu" in m.group(3).lower() else "CD" if m.group(3).lower() == "cd" else "DVD"
+        title, _ = clean_media_listing_title(raw_title, c)
+        if title and not is_bad_title(title) and not looks_like_catalog_noise(title):
+            candidates.append((title, creator, medium))
+
+    # Prefer shorter, cleaner titles that are not catalogue text.
+    if not candidates:
+        return None
+    candidates.sort(key=lambda x: (looks_like_catalog_noise(x[0]), len(x[0]), x[0].lower()))
+    return candidates[0]
+
+
+def fetch_direct_movie_pages(code):
+    c = clean_code(code)
+    if not c or is_isbn(c):
+        return []
+    results = []
+    for template in DIRECT_MOVIE_PAGE_TEMPLATES:
+        url = template.format(code=quote(c))
+        page = fetch(url, timeout=10)
+        if not page.get("ok"):
+            continue
+        merged = page.get("text", "") + " " + html_to_text(page.get("text", ""))
+        digits = re.sub(r"[^0-9Xx]", "", merged).upper()
+        if c not in digits:
+            continue
+        parsed = extract_movie_title_from_verified_text(page.get("text", ""), c)
+        if not parsed:
+            # Fallback to meta title parser on verified page.
+            soup = BeautifulSoup(page.get("text", ""), "html.parser")
+            raw_title = extract_meta_title(soup)
+            title, creator, medium = parse_product_title_from_page(raw_title, page.get("url", url), html_to_text(page.get("text", "")))
+        else:
+            title, creator, medium = parsed
+        if not title or is_bad_title(title) or looks_like_catalog_noise(title):
+            continue
+        item_type = medium if medium in ["DVD", "Blu-ray", "CD"] else detect_item_type(c, title, medium, url)
+        details_parts = []
+        if creator:
+            details_parts.append(creator)
+        if item_type:
+            details_parts.append(item_type)
+        details = " · ".join(details_parts) if details_parts else item_type
+        item = make_result(title, details, "direct_verified_movie_page", item_type, 91, True, creator=creator, medium=item_type)
+        if item:
+            results.append(item)
+    return results
+
+
 def fetch_trusted_product_pages(code):
     c = clean_code(code)
     if not c:
@@ -1244,7 +1344,7 @@ def collect_candidates(code):
     if is_isbn(c):
         sources = [fetch_google_books, fetch_openlibrary, fetch_bnf, fetch_crossref, fetch_dnb, fetch_trusted_product_pages]
     else:
-        sources = [fetch_musicbrainz, fetch_wikidata_gtin, fetch_trusted_product_pages, fetch_upcitemdb, fetch_duckduckgo_weak_candidates]
+        sources = [fetch_musicbrainz, fetch_wikidata_gtin, fetch_direct_movie_pages, fetch_trusted_product_pages, fetch_upcitemdb, fetch_duckduckgo_weak_candidates]
     candidates = []
     with ThreadPoolExecutor(max_workers=6) as executor:
         futures = [executor.submit(source, c) for source in sources]
@@ -1426,7 +1526,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V25: Medien-Typ-Quality-Gate. Broad categories like DVD & Blu-ray no longer force Blu-ray; exact title/medium wins."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V26: Direct verified movie pages + media quality gate. Barcode-verified movie pages beat UPCitemdb, broad shop categories are ignored."})
 
 
 @app.route("/health")
