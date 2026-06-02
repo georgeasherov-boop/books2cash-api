@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v19_dvd_cache_and_resolver_verified"
+VERSION = "books2cash_backend_v20_dvd_cache_and_videobuster_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/19.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/20.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -47,10 +47,18 @@ TRUSTED_PRODUCT_DOMAINS = [
     "medimops.de", "rebuy.de", "booklooker.de", "jpc.de", "worldofbooks.com",
     "abebooks.", "fnac.", "lisez.com", "thalia.", "buecher.de", "bol.com",
     "discogs.com", "musicbrainz.org",
-    "filminfos.de", "cede.de", "product-search.net", "melando.de", "dvd-palace.de", "ofdb.de",
+    "filminfos.de", "cede.de", "product-search.net", "melando.de", "dvd-palace.de", "ofdb.de", "videobuster.de",
 ]
 
 KNOWN_ITEMS = {
+    "4009750214589": {
+        "title": "Sophie & Shiba",
+        "details": "Regie: Leif Bristow · Brittany Bristow / John Rhys-Davies / Deborah Kara Unger · DVD · FSK 0 · 104 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "7321921144790": {
         "title": "Glimmer Man",
         "details": "Regie: John Gray · Steven Seagal / Keenen Ivory Wayans · DVD · USA 1996 · FSK 16 · 88 Minuten",
@@ -599,7 +607,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/19.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/20.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
