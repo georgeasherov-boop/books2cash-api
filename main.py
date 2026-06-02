@@ -13,15 +13,15 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v26_direct_movie_pages_verified"
+VERSION = "books2cash_backend_v27_fast_inventory_timeout_guard_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
-TIMEOUT = 7
-LOOKUP_TIMEOUT_SECONDS = 12
-PRICE_TIMEOUT_SECONDS = 13
+TIMEOUT = 4
+LOOKUP_TIMEOUT_SECONDS = 5
+PRICE_TIMEOUT_SECONDS = 4
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/26.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/27.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,30 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "4030521307407": {
+        "title": "John Carpenter's Ghosts of Mars",
+        "details": "Regie: John Carpenter · Ice Cube / Natasha Henstridge / Jason Statham · DVD · Sony Pictures Home Entertainment · FSK 18 · 94 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
+    "4011976890188": {
+        "title": "Fünf Freunde 4",
+        "details": "Constantin Film · DVD · Deutschland 2015 · FSK 6 · 94 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
+    "4020628976842": {
+        "title": "The Libertine - Sex, Drugs & Rococo",
+        "details": "Regie: Laurence Dunmore · Johnny Depp / John Malkovich / Samantha Morton · DVD · UK 2004/2005 · FSK 16 · 109 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "4012050516789": {
         "title": "Terminator 2 - Tag der Abrechnung",
         "details": "Regie: James Cameron · Arnold Schwarzenegger / Linda Hamilton / Robert Patrick · DVD · VCL · FSK 16 · 132 Minuten",
@@ -873,7 +897,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/26.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/27.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1092,7 +1116,7 @@ def parse_product_title_from_page(raw_title, url, page_text):
 
 def fetch_product_page_candidate_from_url(code, url):
     c = clean_code(code)
-    result = fetch(url, timeout=10)
+    result = fetch(url, timeout=4)
     if not result["ok"]:
         return None
     html = result["text"]
@@ -1516,9 +1540,21 @@ def get_prices(code):
     }
 
 
-def combined_response(code):
+def empty_price_payload(code):
+    return {
+        "ok": True,
+        "version": VERSION,
+        "code": clean_code(code),
+        "ankauf": {"momox": None, "rebuy": None, "zoxs": None, "1000books": None, "buchmaxe": None},
+        "verkauf": {"momox": None, "rebuy": None, "zoxs": None, "1000books": None, "buchmaxe": None, "medimops": None, "amazon": None, "amazon_new": None, "ebay": None, "ebay_sold": None, "booklooker": None, "willhaben": None, "vinted": None},
+        "analyse": {"best_buy": None, "best_sell": None, "avg_sell": None},
+        "debug": {"status": "prices_skipped_default_fast_inventory_mode"},
+    }
+
+
+def combined_response(code, include_prices=False):
     lookup = lookup_product(code)
-    prices = get_prices(code)
+    prices = get_prices(code) if include_prices else empty_price_payload(code)
     response = dict(lookup)
     response.update({"ankauf": prices["ankauf"], "verkauf": prices["verkauf"], "analyse": prices["analyse"], "debug": prices["debug"], "error": None})
     return response
@@ -1526,7 +1562,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V26: Direct verified movie pages + media quality gate. Barcode-verified movie pages beat UPCitemdb, broad shop categories are ignored."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V27: Fast inventory mode. /isbn is product-data-first and skips price crawling unless ?prices=1 is used; lookup timeouts are guarded."})
 
 
 @app.route("/health")
@@ -1542,6 +1578,14 @@ def lookup_route(code):
     return jsonify(result)
 
 
+
+@app.route("/lookup_fast/<code>")
+def lookup_fast_route(code):
+    # Same output as /lookup, but always without candidates to keep Android requests small.
+    result = lookup_product(code)
+    result.pop("candidates", None)
+    return jsonify(result)
+
 @app.route("/prices/<code>")
 def prices_route(code):
     return jsonify(get_prices(code))
@@ -1549,7 +1593,8 @@ def prices_route(code):
 
 @app.route("/isbn/<code>")
 def isbn_compatible_route(code):
-    return jsonify(combined_response(code))
+    include_prices = request.args.get("prices") in ["1", "true", "yes"]
+    return jsonify(combined_response(code, include_prices=include_prices))
 
 
 @app.route("/candidates/<code>")
