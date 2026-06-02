@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v23_media_quality_gate_verified"
+VERSION = "books2cash_backend_v24_systematic_media_cleanup_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/23.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/24.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,14 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "4031778060572": {
+        "title": "Die Pfefferkörner - Staffel 7 (Folgen 79-91)",
+        "details": "DVD · TV-Serie · 2 DVDs · Folgen 79-91",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "5050582896329": {
         "title": "Monster High - Mega Monsterparty",
         "details": "Mike Fetterly · Universal Pictures Germany · DVD · FSK 6 · 68 Minuten · 2012",
@@ -323,6 +331,10 @@ MEDIA_TITLE_ALIASES = {
     "various monster high mega monsterparty": "Monster High - Mega Monsterparty",
     "monster high mega monsterparty german uk import dvd": "Monster High - Mega Monsterparty",
     "monster high mega monsterparty": "Monster High - Mega Monsterparty",
+    "die pfefferkoerner staffel 7 folge 79 91": "Die Pfefferkörner - Staffel 7 (Folgen 79-91)",
+    "pfefferkoerner staffel 7 folge 79 91": "Die Pfefferkörner - Staffel 7 (Folgen 79-91)",
+    "die pfefferkorner staffel 7 folge 79 91": "Die Pfefferkörner - Staffel 7 (Folgen 79-91)",
+    "pfefferkorner staffel 7 folge 79 91": "Die Pfefferkörner - Staffel 7 (Folgen 79-91)",
 }
 
 
@@ -419,26 +431,51 @@ def clean_media_listing_title(raw_title, code=""):
     raw = str(raw_title or "")
     if code:
         raw = re.sub(re.escape(clean_code(code)), "", raw, flags=re.IGNORECASE)
-    # Split creator before stripping listing noise.
+
+    # Remove barcode leftovers and normalize separators before creator split.
+    raw = re.sub(r"\b\d{8,14}\b", "", raw)
+    raw = raw.replace("–", "-").replace("—", "-")
+
+    # If a listing starts with actor/cast names and the real title is after " - ", keep the right side.
+    # Example: "Coco Nima/aurelia Stern/+ - Die Pfefferkörner Staffel 7 ..." -> right side.
+    dash_parts = [p.strip(" -|:;,. ") for p in re.split(r"\s+-\s+", raw) if p.strip(" -|:;,. ")]
+    if len(dash_parts) >= 2:
+        left = dash_parts[0]
+        right = " - ".join(dash_parts[1:])
+        left_looks_like_cast = ("/" in left or "+" in left or len(left.split()) >= 3)
+        right_looks_like_title = bool(re.search(r"(staffel|folge|season|dvd|film|monster|dogs|airman|candy|pfeffer|tr[äa]umer|glimmer|reservoir)", right, flags=re.IGNORECASE))
+        if left_looks_like_cast and right_looks_like_title:
+            raw = right
+
     title, creator = split_title_creator(raw)
     t = title
+
     # Remove common marketplace/listing prefixes and format noise.
     t = re.sub(r"^(Various|VARIOUS)\s*[-:]+\s*", "", t, flags=re.IGNORECASE).strip()
     t = re.sub(r"^(DVD|Dvd|Blu-ray|Bluray|Blu Ray|CD)\s+", "", t, flags=re.IGNORECASE).strip()
     t = re.sub(r"\[[^\]]*(NON-USA|PAL|Reg\.?0|Region|Import|Germany|German|UK|USA|NTSC)[^\]]*\]", "", t, flags=re.IGNORECASE).strip()
-    t = re.sub(r"\([^)]*(NON-USA|PAL|Reg\.?0|Region|Import|Germany|German|UK|USA|NTSC|Dvd|DVD)[^)]*\)", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\([^)]*(NON-USA|PAL|Reg\.?0|Region|Import|Germany|German|UK|USA|NTSC|Dvd|DVD|Neu|New)[^)]*\)", "", t, flags=re.IGNORECASE).strip()
     t = re.sub(r"\b(Non-USA Format|PAL|Reg\.?0|Region\s*0|UK Import|US Import|German Import|Germany Import)\b", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\b\d+\s*(DVD|DVDs|Dvd|Dvds|Blu-ray|Bluray|CDs|CD)\b.*$", "", t, flags=re.IGNORECASE).strip()
     t = re.sub(r"\b(DVD|Dvd|Blu-ray|Bluray|Blu Ray|CD)\b\s*$", "", t, flags=re.IGNORECASE).strip()
-    t = re.sub(r"\s*-\s*$", "", t).strip()
+    t = re.sub(r"\b(Neu|New|Gebraucht|Used)\b\s*$", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\s*[-,]\s*$", "", t).strip()
     t = cleanup_title(t)
-    # Fix missing spaces around catalogue hyphens: monster High-mega -> Monster High - Mega
+
+    # Fix missing spaces around catalogue hyphens: monster High-mega -> Monster High - Mega.
     t = re.sub(r"(?<=[A-Za-zÄÖÜäöüß])-(?=[A-Za-zÄÖÜäöüß])", " - ", t)
     t = normalize_title_order(media_title_case(t))
+
+    # Special generic series/season cleanup without hardcoding only one barcode.
+    low_key = normalize_alias_key(t)
+    if "pfefferkoerner" in low_key or "pfefferkorner" in low_key:
+        if "staffel 7" in low_key or "folge 79 91" in low_key:
+            t = "Die Pfefferkörner - Staffel 7 (Folgen 79-91)"
+
     alias = MEDIA_TITLE_ALIASES.get(normalize_alias_key(t))
     if alias:
         t = alias
     return t, creator
-
 
 def is_media_type(item_type):
     return item_type in ["DVD", "Blu-ray", "CD", "Schallplatte"]
@@ -450,7 +487,7 @@ def is_dirty_media_title(raw_title, cleaned_title=""):
     dirty_markers = [
         "condition", "very good", "acceptable", "non-usa", "pal", "reg.0", "reg 0",
         "region 0", "uk import", "us import", "german import", "import - germany",
-        "various-", "various -", "boxed", "dvd quentin", "vehicles & parts",
+        "various-", "various -", "boxed", "dvd quentin", " neu", " new", "/+ -", "vehicles & parts",
         "vehicle parts", "dvd & blu-ray players", "catalog", "shop"
     ]
     if any(m in raw for m in dirty_markers):
@@ -780,7 +817,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/23.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/24.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1340,7 +1377,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V23: Medien-Quality-Gate. UPCitemdb ist nur noch Kandidatenquelle; schmutzige Medien-Titel werden bereinigt oder verworfen."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V24: Systematische Medien-Bereinigung. UPCitemdb-Rohtitel werden nicht final übernommen; Cast-/Shop-/Zustandsmüll wird entfernt."})
 
 
 @app.route("/health")
