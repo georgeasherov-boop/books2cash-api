@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v20_dvd_cache_and_videobuster_verified"
+VERSION = "books2cash_backend_v21_german_sorttitle_dvd_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/20.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/21.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,14 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "4010324021946": {
+        "title": "Die Träumer",
+        "details": "Regie: Bernardo Bertolucci · Michael Pitt / Louis Garrel / Eva Green · DVD · Frankreich 2003/2004 · FSK 16 · 110 Minuten",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "4009750214589": {
         "title": "Sophie & Shiba",
         "details": "Regie: Leif Bristow · Brittany Bristow / John Rhys-Davies / Deborah Kara Unger · DVD · FSK 0 · 104 Minuten",
@@ -282,17 +290,74 @@ def normalize_duplicate_title(title):
     return t
 
 
+MEDIA_TITLE_ALIASES = {
+    "trumer die dreamers": "Die Träumer",
+    "traeumer die dreamers": "Die Träumer",
+    "träumer die dreamers": "Die Träumer",
+    "trumer die": "Die Träumer",
+    "traeumer die": "Die Träumer",
+    "träumer die": "Die Träumer",
+    "dreamers the": "The Dreamers",
+    "glimmer man the": "The Glimmer Man",
+    "haunted airman the": "The Haunted Airman",
+}
+
+
+def normalize_alias_key(value):
+    key = cleanup_title(value).lower()
+    key = key.replace("ä", "ae").replace("ö", "oe").replace("ü", "ue").replace("ß", "ss")
+    key = re.sub(r"[^a-z0-9]+", " ", key).strip()
+    return key
+
+
 def normalize_title_order(title):
-    # Convert catalog form "Haunted Airman The" -> "The Haunted Airman".
+    # Normalize catalog forms and foreign-sort titles.
+    # Examples:
+    #   "Haunted Airman The" -> "The Haunted Airman"
+    #   "Trumer, Die - Dreamers" -> "Die Träumer"
+    #   "Candy - Candy" -> "Candy"
     t = normalize_duplicate_title(cleanup_title(title))
-    match = re.fullmatch(r"(.+?)\s+(The|A|An|Der|Die|Das|Le|La|Les|Il|Lo|Gli|I|El|Los|Las)", t, flags=re.IGNORECASE)
+
+    alias_key = normalize_alias_key(t)
+    if alias_key in MEDIA_TITLE_ALIASES:
+        return MEDIA_TITLE_ALIASES[alias_key]
+
+    # Remove an alternate/original title after dash for known catalog style:
+    # "Trumer, Die - Dreamers" -> "Trumer, Die"
+    left_part = re.split(r"\s+-\s+", t, maxsplit=1)[0].strip()
+    left_key = normalize_alias_key(left_part)
+    if left_key in MEDIA_TITLE_ALIASES:
+        return MEDIA_TITLE_ALIASES[left_key]
+
+    # Convert comma-article form: "Träumer, Die" -> "Die Träumer".
+    match = re.fullmatch(
+        r"(.+?),\s*(The|A|An|Der|Die|Das|Le|La|Les|Il|Lo|Gli|I|El|Los|Las)",
+        left_part,
+        flags=re.IGNORECASE,
+    )
     if match:
         body = match.group(1).strip(" ,")
         article = match.group(2).strip()
         if len(body.split()) <= 6:
-            return cleanup_title(f"{article} {body}")
-    return t
+            candidate = cleanup_title(f"{article} {body}")
+            alias_key = normalize_alias_key(candidate)
+            return MEDIA_TITLE_ALIASES.get(alias_key, candidate)
 
+    # Convert suffix article form: "Haunted Airman The" -> "The Haunted Airman".
+    match = re.fullmatch(
+        r"(.+?)\s+(The|A|An|Der|Die|Das|Le|La|Les|Il|Lo|Gli|I|El|Los|Las)",
+        t,
+        flags=re.IGNORECASE,
+    )
+    if match:
+        body = match.group(1).strip(" ,")
+        article = match.group(2).strip()
+        if len(body.split()) <= 6:
+            candidate = cleanup_title(f"{article} {body}")
+            alias_key = normalize_alias_key(candidate)
+            return MEDIA_TITLE_ALIASES.get(alias_key, candidate)
+
+    return t
 
 def is_bad_title(title):
     t = cleanup_title(title).lower()
@@ -607,7 +672,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/20.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/21.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -1162,7 +1227,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V19 ergänzt verifizierte DVD-Cache-Treffer und nutzt weiter bereinigte Medien-/UPC-Resolver."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V21 ergänzt deutsche Sortiertitel-Normalisierung und verifizierte DVD-Cache-Treffer."})
 
 
 @app.route("/health")
