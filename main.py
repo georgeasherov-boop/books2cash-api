@@ -13,7 +13,7 @@ from bs4 import BeautifulSoup
 
 app = Flask(__name__)
 
-VERSION = "books2cash_backend_v22_reservoir_dogs_cleanup_verified"
+VERSION = "books2cash_backend_v23_media_quality_gate_verified"
 DB_PATH = os.environ.get("BOOKS2CASH_DB_PATH", "books2cash_cache.sqlite3")
 TIMEOUT = 7
 LOOKUP_TIMEOUT_SECONDS = 12
@@ -21,7 +21,7 @@ PRICE_TIMEOUT_SECONDS = 13
 
 HEADERS = {
     "User-Agent": (
-        "Books2Cash/22.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
+        "Books2Cash/23.0 (+https://github.com/georgeasherov-boop/books2cash-api) "
         "Mozilla/5.0 (Linux; Android 14; Mobile) AppleWebKit/537.36 Chrome/124 Mobile Safari/537.36"
     ),
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,application/json;q=0.8,*/*;q=0.7",
@@ -51,6 +51,14 @@ TRUSTED_PRODUCT_DOMAINS = [
 ]
 
 KNOWN_ITEMS = {
+    "5050582896329": {
+        "title": "Monster High - Mega Monsterparty",
+        "details": "Mike Fetterly · Universal Pictures Germany · DVD · FSK 6 · 68 Minuten · 2012",
+        "item_type": "DVD",
+        "source": "known_dvd_cache",
+        "confidence": 99,
+        "verified": True,
+    },
     "828765581097": {
         "title": "Reservoir Dogs",
         "details": "Regie: Quentin Tarantino · Harvey Keitel / Tim Roth / Steve Buscemi / Michael Madsen · DVD · USA 1992 · FSK 18 · 94 Minuten",
@@ -312,6 +320,9 @@ MEDIA_TITLE_ALIASES = {
     "dreamers the": "The Dreamers",
     "glimmer man the": "The Glimmer Man",
     "haunted airman the": "The Haunted Airman",
+    "various monster high mega monsterparty": "Monster High - Mega Monsterparty",
+    "monster high mega monsterparty german uk import dvd": "Monster High - Mega Monsterparty",
+    "monster high mega monsterparty": "Monster High - Mega Monsterparty",
 }
 
 
@@ -383,6 +394,78 @@ def normalize_title_order(title):
             return MEDIA_TITLE_ALIASES.get(alias_key, candidate)
 
     return t
+
+
+def media_title_case(value):
+    value = cleanup_title(value)
+    if not value:
+        return value
+    # If title is mostly lower/awkward catalogue case, make it readable.
+    if value[:1].islower() or re.search(r"-[a-z]", value):
+        chunks = []
+        for part in re.split(r"(\s+-\s+)", value):
+            if re.fullmatch(r"\s+-\s+", part):
+                chunks.append(" - ")
+            else:
+                chunks.append(" ".join(w[:1].upper() + w[1:].lower() if w.isupper() or w.islower() else w for w in part.split()))
+        value = "".join(chunks)
+    value = re.sub(r"\bUnd\b", "und", value)
+    value = re.sub(r"\bDvd\b", "DVD", value)
+    value = re.sub(r"\bCd\b", "CD", value)
+    return value.strip(" -|:;,. ")
+
+
+def clean_media_listing_title(raw_title, code=""):
+    raw = str(raw_title or "")
+    if code:
+        raw = re.sub(re.escape(clean_code(code)), "", raw, flags=re.IGNORECASE)
+    # Split creator before stripping listing noise.
+    title, creator = split_title_creator(raw)
+    t = title
+    # Remove common marketplace/listing prefixes and format noise.
+    t = re.sub(r"^(Various|VARIOUS)\s*[-:]+\s*", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"^(DVD|Dvd|Blu-ray|Bluray|Blu Ray|CD)\s+", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\[[^\]]*(NON-USA|PAL|Reg\.?0|Region|Import|Germany|German|UK|USA|NTSC)[^\]]*\]", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\([^)]*(NON-USA|PAL|Reg\.?0|Region|Import|Germany|German|UK|USA|NTSC|Dvd|DVD)[^)]*\)", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\b(Non-USA Format|PAL|Reg\.?0|Region\s*0|UK Import|US Import|German Import|Germany Import)\b", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\b(DVD|Dvd|Blu-ray|Bluray|Blu Ray|CD)\b\s*$", "", t, flags=re.IGNORECASE).strip()
+    t = re.sub(r"\s*-\s*$", "", t).strip()
+    t = cleanup_title(t)
+    # Fix missing spaces around catalogue hyphens: monster High-mega -> Monster High - Mega
+    t = re.sub(r"(?<=[A-Za-zÄÖÜäöüß])-(?=[A-Za-zÄÖÜäöüß])", " - ", t)
+    t = normalize_title_order(media_title_case(t))
+    alias = MEDIA_TITLE_ALIASES.get(normalize_alias_key(t))
+    if alias:
+        t = alias
+    return t, creator
+
+
+def is_media_type(item_type):
+    return item_type in ["DVD", "Blu-ray", "CD", "Schallplatte"]
+
+
+def is_dirty_media_title(raw_title, cleaned_title=""):
+    raw = str(raw_title or "").lower()
+    cleaned = str(cleaned_title or "").lower()
+    dirty_markers = [
+        "condition", "very good", "acceptable", "non-usa", "pal", "reg.0", "reg 0",
+        "region 0", "uk import", "us import", "german import", "import - germany",
+        "various-", "various -", "boxed", "dvd quentin", "vehicles & parts",
+        "vehicle parts", "dvd & blu-ray players", "catalog", "shop"
+    ]
+    if any(m in raw for m in dirty_markers):
+        return True
+    if any(m in cleaned for m in [" condition", " import", " non-usa", " reg.0", " vehicles"]):
+        return True
+    return False
+
+
+def is_unacceptable_media_title(title):
+    t = cleanup_title(title).lower()
+    if not t:
+        return True
+    bad = ["condition", "non-usa", "reg.0", "reg 0", "vehicles & parts", "vehicle parts", "dvd & blu-ray players"]
+    return any(x in t for x in bad)
 
 def is_bad_title(title):
     t = cleanup_title(title).lower()
@@ -697,7 +780,7 @@ def fetch_musicbrainz(code):
     try:
         url = f"https://musicbrainz.org/ws/2/release/?query=barcode:{quote(c)}&fmt=json&limit=5"
         headers = {
-            "User-Agent": "Books2Cash/22.0 (github.com/georgeasherov-boop/books2cash-api)",
+            "User-Agent": "Books2Cash/23.0 (github.com/georgeasherov-boop/books2cash-api)",
             "Accept": "application/json",
         }
         data = requests.get(url, headers=headers, timeout=8).json()
@@ -765,54 +848,57 @@ def fetch_upcitemdb(code):
         candidates = []
         for item in data.get("items", []) or []:
             raw_title = item.get("title", "") or ""
-            title, creator = split_title_creator(raw_title)
-            title = normalize_title_order(title)
+            title, creator = clean_media_listing_title(raw_title, c)
             brand = item.get("brand", "") or ""
             category = item.get("category", "") or ""
             description = item.get("description", "") or ""
+            raw_joined = f"{raw_title} {brand} {category} {description}"
             item_type = detect_item_type(c, raw_title, f"{brand} {category} {description}", "upcitemdb")
-            raw_lower = raw_title.lower()
-            # UPCitemdb often misclassifies DVDs/Blu-rays through generic shop categories.
-            # If the actual title says DVD and not Blu-ray, force DVD.
+            raw_lower = raw_joined.lower()
+            # UPCitemdb categories are often wrong for DVDs/Blu-rays; title text wins.
             if re.search(r"\b(dvd|dvd-rom|d v d)\b", raw_lower) and not re.search(r"blu[ -]?ray|bluray", raw_lower):
                 item_type = "DVD"
+            elif re.search(r"blu[ -]?ray|bluray", raw_lower):
+                item_type = "Blu-ray"
             bad_category_words = ["dvd & blu-ray players", "vehicles", "vehicle parts", "accessories", "electronics > video > video players"]
             if any(w in category.lower() for w in bad_category_words):
                 category = ""
-                if brand.lower() in ["colombia", "columbia", "sony pictures home entertainment"]:
+                if brand.lower() in ["colombia", "columbia", "sony pictures home entertainment", "media", "various"]:
                     brand = ""
-            medium = item_type if item_type in ["DVD", "Blu-ray", "CD", "Schallplatte"] else ""
+            medium = item_type if is_media_type(item_type) else ""
+            # Strong quality gate: never pass raw marketplace/listing garbage as final-looking title.
+            dirty = is_dirty_media_title(raw_title + " " + category, title)
+            if is_media_type(item_type):
+                if is_unacceptable_media_title(title) or len(title) < 3:
+                    continue
+                # If the raw title is dirty and our cleanup did not significantly improve it, drop it.
+                raw_clean_no_creator, _ = split_title_creator(raw_title)
+                raw_clean_no_creator = normalize_title_order(raw_clean_no_creator)
+                if dirty and normalize_alias_key(raw_clean_no_creator) == normalize_alias_key(title):
+                    # Allow only if the title is short/clean after deleting known noise.
+                    if len(title.split()) > 6:
+                        continue
             details_parts = []
-            if creator:
+            if creator and creator.lower() not in ["various", "various artists"]:
                 details_parts.append(creator)
             if medium:
                 details_parts.append(medium)
-            if brand and brand.lower() not in ["colombia", "columbia", "sony pictures home entertainment", "media"]:
+            if brand and brand.lower() not in ["colombia", "columbia", "sony pictures home entertainment", "media", "various"]:
                 details_parts.append(brand)
-            # Only keep category for non-media product types where it is actually useful.
-            if category and item_type not in ["DVD", "Blu-ray", "CD", "Schallplatte"]:
+            if category and not is_media_type(item_type):
                 details_parts.append(category)
             details = " · ".join(details_parts) if details_parts else (medium or item_type or "-")
-            confidence = 76
-            raw_lower = raw_title.lower()
-            if "condition" in raw_lower:
-                confidence -= 8
-            if " by " in raw_lower:
+            confidence = 64
+            if not dirty:
+                confidence += 8
+            if creator:
                 confidence += 4
             if item_type != "Sonstiges":
-                confidence += 6
+                confidence += 4
+            # Single-source UPCitemdb remains a suggestion, never verified.
             result = make_result(
-                title,
-                details,
-                "upcitemdb_cleaned",
-                item_type,
-                confidence,
-                False,
-                suggested=True,
-                creator=creator,
-                publisher=brand,
-                manufacturer=brand,
-                medium=medium,
+                title, details, "upcitemdb_quality_gate", item_type, confidence, False,
+                suggested=True, creator=creator, publisher=brand, manufacturer=brand, medium=medium,
             )
             if result:
                 candidates.append(result)
@@ -1044,8 +1130,8 @@ def rank_candidates(candidates):
             score += 8
         if sources <= {"duckduckgo_weak_candidate"}:
             score = min(score, 62)
-        if sources <= {"upcitemdb_cleaned"}:
-            score = min(score, 86)
+        if sources <= {"upcitemdb_cleaned", "upcitemdb_quality_gate"}:
+            score = min(score, 72)
         best = dict(best)
         best["confidence"] = min(score, 99)
         best["sources"] = sorted(sources)
@@ -1096,7 +1182,9 @@ def lookup_product(code):
     if best:
         item_type = best.get("item_type", "Sonstiges")
         confidence = int(best.get("confidence", 0))
-        if best.get("verified") or (confidence >= 58 and item_type != "Sonstiges" and not is_bad_title(best.get("title", ""))):
+        only_upc = set(best.get("sources", [best.get("source", "")])) <= {"upcitemdb_cleaned", "upcitemdb_quality_gate"}
+        accept_suggestion = (confidence >= (62 if only_upc else 58) and item_type != "Sonstiges" and not is_bad_title(best.get("title", "")) and not is_unacceptable_media_title(best.get("title", "")))
+        if best.get("verified") or accept_suggestion:
             found = True
             message = "Treffer gefunden" if best.get("verified") else "Vorschlag gefunden – bitte prüfen"
             if best.get("verified"):
@@ -1252,7 +1340,7 @@ def combined_response(code):
 
 @app.route("/")
 def home():
-    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V22 ergänzt Reservoir-Dogs-UPC-Bereinigung und weitere DVD-Cache-Treffer."})
+    return jsonify({"ok": True, "version": VERSION, "status": "Books2Cash API läuft", "endpoints": ["/health", "/lookup/<code>", "/prices/<code>", "/isbn/<code>", "/candidates/<code>", "/learn/<code>", "/cache/<code>"], "principle": "V23: Medien-Quality-Gate. UPCitemdb ist nur noch Kandidatenquelle; schmutzige Medien-Titel werden bereinigt oder verworfen."})
 
 
 @app.route("/health")
